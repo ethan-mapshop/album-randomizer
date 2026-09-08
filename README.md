@@ -6,24 +6,39 @@ Open `index.html` in a browser. No build step, no server, no dependencies.
 
 ## The daily loop
 
-1. **Today** opens with one random unplayed album drawn from each genre, in the
-   spreadsheet's column order, starting at the genre after the one the last day
-   ended on.
-2. It keeps drawing — looping back around the genre list — until the plan reaches
-   the 8 hour target.
-3. Hit **Spotify ↗** on a card to search for the album, add it to the playlist,
-   then hit **Add** on the card. Not feeling it? **↻** draws a different album
-   from that genre, or open **alternates** and pick one of the four runners‑up.
-4. **Finish day** moves everything you added to the Played tab and parks the
-   rotation on the genre after the last one you used, ready for tomorrow.
+A day runs **one favorite, then four from the genre rotation, repeating** — so
+favorites land on albums 1, 6 and 11. The genre draws carry on in order through
+the favorites, picking up from wherever the previous day stopped.
 
-Album lengths decide how many albums a day needs. Connect Spotify (below) to get
-real ones; otherwise everything is assumed to be 45 minutes. Either way you can
-type over any card's `min` box — the value sticks to that album for good, and the
-day tops itself up if the change leaves you short of the target.
+1. **Today** opens already drawn, and keeps adding albums — looping back round
+   the genre list — until the plan reaches the target running time.
+2. Hit **Spotify ↗** on a card to open the album, add it to your playlist, then
+   hit **Add** on the card. Not feeling it? **↻** draws a different album from
+   that slot, or open **alternates** and pick one of the runners-up.
+3. **Finish day** files what you added and parks the rotation on the genre after
+   the last one you used.
 
-The Favorites column comes through as a star on the album plus one bonus draw at
-the end of the day, outside the rotation. Turn it off in Settings.
+### How favorites behave
+
+Favorites are the exception to played, deliberately:
+
+- **The favorites pool ignores played entirely.** Any favorite can come round
+  again on any day.
+- **A favorite drawn in a favorite slot is not retired** by Finish day. It goes
+  in your playlist and stays available.
+- **The same album drawn from its genre is retired**, like anything else.
+
+So every favorite stays permanently available as a favorite, but only ever
+surfaces once as a genre pick. **Start with a favorite** in Settings turns the
+whole cadence off and leaves a plain genre rotation; switching it changes
+tomorrow rather than a day you have already started picking from.
+
+### Album lengths
+
+Lengths decide how many albums a day needs. Type over any card's `min` box and
+the value sticks to that album for good; the day tops itself up if the change
+leaves you short of the target. The `trk` box takes only part of a release —
+useful when a deluxe edition tacks demos on the end.
 
 ## Where the links open
 

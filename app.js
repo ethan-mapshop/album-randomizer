@@ -1068,11 +1068,13 @@
 
   /* ──────────────────────────── session ──────────────────────────── */
 
+  // The favourites pool deliberately ignores played, so a favourite can come
+  // round again any day. A genre pool still retires what it has served.
   function poolFor(genreIndex, exclude) {
     var out = [];
     for (var i = 0; i < state.library.length; i++) {
       var a = state.library[i];
-      if (a.played) continue;
+      if (a.played && genreIndex !== BONUS) continue;
       if (exclude[a.id]) continue;
       if (genreIndex === BONUS ? !a.fav : a.genre !== state.genres[genreIndex]) continue;
       out.push(a);
@@ -1115,25 +1117,30 @@
     };
   }
 
-  // The off-rotation Favorites draw always sits at the end of the day.
-  function keepBonusLast(session) {
-    for (var i = 0; i < session.slots.length - 1; i++) {
-      if (session.slots[i].genreIndex === BONUS) {
-        session.slots.push(session.slots.splice(i, 1)[0]);
-        return;
-      }
-    }
+  // A day runs one favourite then four from the rotation, repeating: slots 1,
+  // 6, 11 are favourites. Position is taken from the slot count, so dropping a
+  // card does not retype the ones already drawn.
+  var FAV_EVERY = 5;
+
+  function wantsFavourite(session) {
+    if (!state.settings.favoritesBonus) return false;
+    return session.slots.length % FAV_EVERY === 0;
   }
 
   // Walks the rotation forward past any genre with nothing left to play.
+  // Adds the next slot the cadence calls for. A favourite slot falls back to a
+  // genre draw if there are no favourites left to serve.
   function appendRotationSlot(session) {
+    var used = usedIds(session);
+    if (wantsFavourite(session) && poolFor(BONUS, used).length) {
+      session.slots.push(makeSlot(session, BONUS));
+      return true;
+    }
     var n = state.genres.length;
     var idx = nextRotationIndex(session);
-    var used = usedIds(session);
     for (var tries = 0; tries < n; tries++) {
       if (poolFor(idx, used).length) {
         session.slots.push(makeSlot(session, idx));
-        keepBonusLast(session);
         return true;
       }
       idx = (idx + 1) % n;
@@ -1180,10 +1187,6 @@
   function newSession() {
     var session = { date: today(), startRotation: state.rotation, slots: [] };
     ensureCoverage(session);
-    if (state.settings.favoritesBonus) {
-      var used = usedIds(session);
-      if (poolFor(BONUS, used).length) session.slots.push(makeSlot(session, BONUS));
-    }
     return session;
   }
 
@@ -1193,11 +1196,14 @@
     var added = s.slots.filter(function (x) { return x.added && x.albumId; });
     if (!added.length) { toast('Nothing marked as added yet.'); return; }
 
-    var lastGenre = null;
+    // A favourite served as a favourite stays in the pool; the same album drawn
+    // from its genre is retired, which is what keeps it a once-only genre pick.
+    var lastGenre = null, keptFav = 0;
     added.forEach(function (slot) {
       var a = byId(slot.albumId);
+      if (slot.genreIndex === BONUS) { keptFav++; return; }
       if (a) { a.played = true; a.playedAt = s.date; }
-      if (slot.genreIndex !== BONUS) lastGenre = slot.genreIndex;
+      lastGenre = slot.genreIndex;
     });
     if (lastGenre !== null) state.rotation = (lastGenre + 1) % state.genres.length;
 
@@ -1205,6 +1211,8 @@
     save();
     render();
     toast('Logged ' + added.length + ' album' + (added.length === 1 ? '' : 's') +
+      (keptFav ? ' (' + keptFav + ' favourite' + (keptFav === 1 ? '' : 's') +
+        ' stay in the pool)' : '') +
       ' · next day starts with ' + state.genres[state.rotation] + '.');
   }
 
@@ -1255,10 +1263,10 @@
 
     var box = $('#slots');
     box.textContent = '';
-    var rotNum = 0;
+    var num = 0;
     s.slots.forEach(function (slot) {
-      if (slot.genreIndex !== BONUS) rotNum++;
-      box.appendChild(renderSlot(slot, slot.genreIndex === BONUS ? null : rotNum));
+      // Favourites are part of the run now, so the numbering counts them too.
+      box.appendChild(renderSlot(slot, ++num));
     });
 
     var canAdd = anyPoolLeft(s);
@@ -3049,13 +3057,16 @@
 
     $('#set-fav-bonus').addEventListener('change', function () {
       state.settings.favoritesBonus = this.checked;
+      // The cadence fixes which positions are favourites across the whole day,
+      // so it cannot be patched into a run that is already drawn. Redraw when
+      // nothing has been picked yet, and otherwise leave today alone.
       var s = state.session;
-      if (s) {
-        if (!this.checked) {
-          s.slots = s.slots.filter(function (x) { return x.genreIndex !== BONUS; });
-        } else if (!s.slots.some(function (x) { return x.genreIndex === BONUS; })) {
-          if (poolFor(BONUS, usedIds(s)).length) s.slots.push(makeSlot(s, BONUS));
-        }
+      var picked = s ? s.slots.filter(function (x) { return x.added; }).length : 0;
+      if (s && !picked) {
+        state.session = null;
+      } else if (picked) {
+        toast('Applies from tomorrow — today already has ' + picked +
+          ' album' + (picked === 1 ? '' : 's') + ' picked.');
       }
       save();
       renderToday();
