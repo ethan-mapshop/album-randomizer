@@ -65,6 +65,55 @@ RateYourMusic average can be pasted straight in. Library → **No RYM score** an
 The review list still shows each candidate release's year, which is often the
 quickest way to tell an original from a reissue when picking between them.
 
+## Sync
+
+One library across every device. The app keeps it as a single JSON file in a
+GitHub repository, pulls it when it opens and when the tab regains focus, and
+pushes a few seconds after you stop editing.
+
+### Setting it up
+
+1. Make a repository for the data. It can be private; the app reaches it by
+   token rather than by being served.
+2. Create a **fine-grained personal access token** at
+   *Settings → Developer settings → Personal access tokens → Fine-grained*:
+   scope it to **only that repository**, and grant **Contents: read and write**
+   and nothing else.
+3. In the app, **Settings → Sync**: fill in owner, repository, file and branch,
+   paste the token, name the device, and press **Save & connect**.
+
+The first device to connect finds no file and uploads what it has. Every device
+after that pulls that copy and adopts it.
+
+### What travels, and what does not
+
+The file carries the library, genres and their colours, the rotation, the day in
+progress, and the settings that describe the collection — target length, assumed
+album length, the favourites draw.
+
+It deliberately does **not** carry your Spotify credentials, the sync token, the
+theme or the sidebar state. Those stay on each device, which means no secret of
+yours is ever written to GitHub.
+
+### When two devices disagree
+
+Every write says which version it is replacing. If another device saved since
+this one last looked, GitHub refuses the write rather than letting it overwrite,
+and the status line reads **Conflict**. Two ways out:
+
+- **Pull now** takes the other device's copy and discards local changes.
+- **Overwrite repo copy** does the opposite, after asking.
+
+Nothing is merged automatically. Silently combining two libraries is how records
+go missing without anyone noticing.
+
+### Notes
+
+Files over 1 MB come back from the contents endpoint without their content, so
+reads fall through to the blob endpoint, which has no such limit. Closing the tab
+with a save still queued will ask before leaving — a queued push cannot be
+completed during unload, so pretending otherwise would lose the edit.
+
 ## Connecting Spotify
 
 Optional, but it turns the 8 hour target from an estimate into a real number, and
@@ -237,9 +286,11 @@ name restores it, along with its original colour.
 
 ## Data
 
-State lives in the browser's `localStorage`, so it is tied to the browser you use
-it in and to how the page is opened — `file://` and `http://localhost` are
-separate origins with separate storage. Pick one and stick to it.
+Without sync configured, state lives in the browser's `localStorage`, so it is
+tied to that browser and to how the page is opened — `file://` and
+`http://localhost` are separate origins with separate storage. With sync
+configured that stops mattering: local storage becomes a cache and the GitHub
+copy is the record.
 
 **Settings → Export JSON** writes a full backup (library, played history, looked-up
 lengths, settings, the day in progress); **Import JSON** restores it. Worth doing

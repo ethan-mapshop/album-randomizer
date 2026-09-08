@@ -33,6 +33,11 @@
       rotation: 0,
       session: null,
       spotify: { clientId: '', clientSecret: '', token: null, tokenExp: 0 },
+      // Never included in the synced file: it is this device's key to it.
+      sync: {
+        owner: '', repo: '', branch: 'main', path: 'library.json',
+        token: '', sha: null, remoteAt: null, lastPush: 0, device: ''
+      },
       genreHues: SEED.genreHues ? JSON.parse(JSON.stringify(SEED.genreHues)) : null,
       settings: {
         targetMinutes: 480,
@@ -118,6 +123,11 @@
           st.genreHues = saved.genreHues || SEED.genreHues || null;
           st.rotation = saved.rotation || 0;
           st.session = saved.session || null;
+          if (saved.sync) {
+            for (var yk in st.sync) {
+              if (saved.sync[yk] !== undefined) st.sync[yk] = saved.sync[yk];
+            }
+          }
           if (saved.spotify) {
             for (var sk in st.spotify) {
               if (saved.spotify[sk] !== undefined) st.spotify[sk] = saved.spotify[sk];
@@ -131,6 +141,7 @@
         }
       } catch (e) { /* corrupt payload — fall back to a fresh library */ }
     }
+    if (!st.sync.device) st.sync.device = guessDeviceName();
     mergeSeed(st);
     backfill(st);
     if (st.rotation >= st.genres.length) st.rotation = 0;
@@ -139,9 +150,28 @@
     return st;
   }
 
-  function save() {
+  // A device name that reads as a place rather than an id, so a commit list
+  // says where an edit came from.
+  function guessDeviceName() {
+    var ua = navigator.userAgent || '';
+    var os = /Android/i.test(ua) ? 'Android'
+      : /iPhone|iPad|iPod/i.test(ua) ? 'iOS'
+      : /Mac OS X/i.test(ua) ? 'Mac'
+      : /Windows/i.test(ua) ? 'Windows'
+      : /Linux/i.test(ua) ? 'Linux' : 'browser';
+    var browser = /Edg\//.test(ua) ? 'Edge'
+      : /Chrome\//.test(ua) ? 'Chrome'
+      : /Firefox\//.test(ua) ? 'Firefox'
+      : /Safari\//.test(ua) ? 'Safari' : '';
+    return (browser ? browser + ' on ' : '') + os;
+  }
+
+  // quiet saves come from the sync layer itself and must not re-arm the
+  // push timer, or a pull would bounce straight back as a push.
+  function save(quiet) {
     try { localStorage.setItem(KEY, JSON.stringify(state)); }
     catch (e) { toast('Could not save — local storage is full or blocked.'); }
+    if (!quiet) syncSoon();
   }
 
   /* ──────────────────────────── helpers ──────────────────────────── */
@@ -775,6 +805,265 @@
     await flush();
     save();
     return stats;
+  }
+
+
+  /* ─────────────────────────── github sync ───────────────────────────
+   * The library lives as one JSON file in a GitHub repo. Every device pulls it
+   * on load and on focus, and pushes a debounced snapshot after changes. Writes
+   * carry the blob SHA they were based on, so a second device cannot silently
+   * overwrite the first — GitHub rejects the write and we surface the clash.
+   *
+   * Credentials and per-device preferences deliberately stay out of the file,
+   * which keeps secrets off GitHub entirely.
+   */
+
+  var SYNC_DEBOUNCE = 4000;     // quiet period after the last edit before pushing
+  var SYNC_SETTINGS = ['targetMinutes', 'defaultMinutes', 'favoritesBonus',
+                       'desktopLinks', 'lastAddGenre'];
+  var syncTimer = null;
+  var syncBusy = false;
+  var syncState = 'idle';       // idle | pulling | pushing | conflict | error | off
+  var syncNote = '';
+
+  function syncConfigured() {
+    var s = state.sync;
+    return !!(s && s.owner && s.repo && s.token);
+  }
+
+  function ghHeaders() {
+    return {
+      'Authorization': 'Bearer ' + state.sync.token,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28'
+    };
+  }
+
+  function ghUrl(extra) {
+    var s = state.sync;
+    return 'https://api.github.com/repos/' + encodeURIComponent(s.owner) + '/' +
+      encodeURIComponent(s.repo) + '/contents/' +
+      s.path.split('/').map(encodeURIComponent).join('/') +
+      (extra || '');
+  }
+
+  // btoa cannot take UTF-8 directly, and spreading a megabyte of bytes into
+  // fromCharCode overflows the stack, so both directions go in chunks.
+  function toBase64(text) {
+    var bytes = new TextEncoder().encode(text);
+    var out = '', step = 0x8000;
+    for (var i = 0; i < bytes.length; i += step) {
+      out += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+    }
+    return btoa(out);
+  }
+
+  function fromBase64(b64) {
+    var bin = atob(String(b64).replace(/\s/g, ''));
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+
+  function ghFetch(url, options) {
+    return fetch(url, options).then(function (r) {
+      if (r.status === 404) return { missing: true, status: 404 };
+      return r.json().then(function (body) {
+        if (!r.ok) {
+          var msg = (body && body.message) || ('GitHub ' + r.status);
+          var err = new Error(msg);
+          err.status = r.status;
+          throw err;
+        }
+        return body;
+      }, function () {
+        var err = new Error('GitHub ' + r.status);
+        err.status = r.status;
+        throw err;
+      });
+    });
+  }
+
+  /* ---- what actually travels ---- */
+
+  function packAlbum(a) {
+    var o = { id: a.id, name: a.name, artist: a.artist || '', title: a.title || '', genre: a.genre };
+    if (a.year) o.year = a.year;
+    if (a.rym || a.rym === 0) o.rym = a.rym;
+    if (a.minutes) o.minutes = a.minutes;
+    if (a.tracks) o.tracks = a.tracks;
+    if (a.fav) o.fav = 1;
+    if (a.played) { o.played = 1; if (a.playedAt) o.playedAt = a.playedAt; }
+    if (a.custom) o.custom = 1;
+    if (a.approx) o.approx = 1;
+    if (a.match && a.match !== 'auto') o.match = a.match;
+    if (a.spotifyId) {
+      o.sp = a.spotifyId;
+      if (a.spotifyUrl && a.spotifyUrl !== 'https://open.spotify.com/album/' + a.spotifyId) {
+        o.spotifyUrl = a.spotifyUrl;
+      }
+      if (a.matchName && a.matchName !== ((a.artist ? a.artist + ' - ' : '') + a.title)) {
+        o.matchName = a.matchName;
+      }
+    }
+    if (a.candidates && a.candidates.length) o.candidates = a.candidates;
+    return o;
+  }
+
+  function snapshot() {
+    var settings = {};
+    SYNC_SETTINGS.forEach(function (k) { settings[k] = state.settings[k]; });
+    return {
+      v: 1,
+      updatedAt: new Date().toISOString(),
+      device: state.sync.device || 'unknown',
+      genres: state.genres,
+      genreHues: state.genreHues,
+      deletedSeedIds: state.deletedSeedIds,
+      deletedGenres: state.deletedGenres,
+      rotation: state.rotation,
+      session: state.session,
+      settings: settings,
+      albums: state.library.map(packAlbum)
+    };
+  }
+
+  // Replaces local state wholesale. The remote file is the record; anything a
+  // device holds that has not been pushed is by definition older.
+  function adopt(remote) {
+    state.genres = remote.genres && remote.genres.length ? remote.genres : state.genres;
+    state.genreHues = remote.genreHues || state.genreHues;
+    state.deletedSeedIds = remote.deletedSeedIds || [];
+    state.deletedGenres = remote.deletedGenres || [];
+    state.rotation = remote.rotation || 0;
+    state.session = remote.session || null;
+    if (remote.settings) {
+      SYNC_SETTINGS.forEach(function (k) {
+        if (remote.settings[k] !== undefined) state.settings[k] = remote.settings[k];
+      });
+    }
+    state.library = (remote.albums || []).map(seedAlbum);
+    // candidates survive a round trip so a half-finished review is not lost
+    (remote.albums || []).forEach(function (s, i) {
+      if (s.candidates) state.library[i].candidates = s.candidates;
+    });
+    if (state.rotation >= state.genres.length) state.rotation = 0;
+    ensureHues();
+  }
+
+  /* ---- pull / push ---- */
+
+  function syncPull(quiet) {
+    if (!syncConfigured()) return Promise.resolve(false);
+    syncState = 'pulling';
+    renderSyncStatus();
+    return ghFetch(ghUrl('?ref=' + encodeURIComponent(state.sync.branch || 'main')),
+      { headers: ghHeaders() })
+      .then(function (meta) {
+        if (meta.missing) {
+          // Nothing there yet: this device's copy becomes the first version.
+          syncState = 'idle';
+          syncNote = 'No file in the repo yet — your next save creates it.';
+          renderSyncStatus();
+          return false;
+        }
+        state.sync.sha = meta.sha;
+        // The contents endpoint omits content above 1 MB; the blob endpoint has
+        // no such limit, so fall through to it rather than failing on size.
+        if (meta.content) return fromBase64(meta.content);
+        return ghFetch('https://api.github.com/repos/' + encodeURIComponent(state.sync.owner) +
+          '/' + encodeURIComponent(state.sync.repo) + '/git/blobs/' + meta.sha,
+          { headers: ghHeaders() }).then(function (blob) { return fromBase64(blob.content); });
+      })
+      .then(function (text) {
+        if (text === false) return false;
+        var remote = JSON.parse(text);
+        adopt(remote);
+        state.sync.remoteAt = remote.updatedAt || null;
+        syncState = 'idle';
+        syncNote = 'Loaded ' + state.library.length + ' albums saved ' +
+          (remote.device ? 'on ' + remote.device : '') +
+          (remote.updatedAt ? ' at ' + new Date(remote.updatedAt).toLocaleString() : '');
+        save(true);
+        render();
+        renderSyncStatus();
+        if (!quiet) toast('Synced from GitHub.');
+        return true;
+      })
+      .catch(function (err) {
+        syncState = 'error';
+        syncNote = describeSyncError(err);
+        renderSyncStatus();
+        if (!quiet) toast('Sync failed: ' + syncNote);
+        return false;
+      });
+  }
+
+  function syncPush(force) {
+    if (!syncConfigured()) return Promise.resolve(false);
+    if (syncBusy) return Promise.resolve(false);
+    syncBusy = true;
+    syncState = 'pushing';
+    renderSyncStatus();
+
+    var payload = snapshot();
+    var body = {
+      message: 'Library updated on ' + payload.device,
+      content: toBase64(JSON.stringify(payload)),
+      branch: state.sync.branch || 'main'
+    };
+    // GitHub takes the sha as "the version I am replacing". Without it the
+    // write is only accepted when no file exists yet.
+    if (state.sync.sha) body.sha = state.sync.sha;
+
+    return ghFetch(ghUrl(), {
+      method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body)
+    }).then(function (res) {
+      syncBusy = false;
+      state.sync.sha = res.content && res.content.sha;
+      state.sync.remoteAt = payload.updatedAt;
+      state.sync.lastPush = Date.now();
+      syncState = 'idle';
+      syncNote = 'Saved at ' + new Date(payload.updatedAt).toLocaleTimeString();
+      save(true);
+      renderSyncStatus();
+      return true;
+    }, function (err) {
+      syncBusy = false;
+      if (err.status === 409 || /does not match|sha/i.test(err.message)) {
+        syncState = 'conflict';
+        syncNote = 'Another device saved since this one loaded. Pull to take theirs, ' +
+          'or push anyway to overwrite it.';
+      } else {
+        syncState = 'error';
+        syncNote = describeSyncError(err);
+      }
+      renderSyncStatus();
+      return false;
+    });
+  }
+
+  function describeSyncError(err) {
+    var m = String(err && err.message || err);
+    if (err && err.status === 401) return 'Token rejected — check it has not expired.';
+    if (err && err.status === 403) return 'Token lacks Contents write on that repository.';
+    if (err && err.status === 404) return 'Repository or branch not found — check owner, name and branch.';
+    if (/Failed to fetch/i.test(m)) return 'Could not reach GitHub.';
+    return m;
+  }
+
+  // Any state change schedules a push; the timer collapses a burst of edits
+  // into one commit rather than one per keystroke.
+  function syncPending() {
+    return syncConfigured() && (syncState === 'pending' || syncBusy);
+  }
+
+  function syncSoon() {
+    if (!syncConfigured()) return;
+    clearTimeout(syncTimer);
+    syncState = 'pending';
+    renderSyncStatus();
+    syncTimer = setTimeout(function () { syncPush(false); }, SYNC_DEBOUNCE);
   }
 
   /* ──────────────────────────── session ──────────────────────────── */
@@ -2300,6 +2589,14 @@
     $('#set-fav-bonus').checked = !!state.settings.favoritesBonus;
     $('#set-desktop-links').checked = !!state.settings.desktopLinks;
 
+    $('#sync-owner').value = state.sync.owner;
+    $('#sync-repo').value = state.sync.repo;
+    $('#sync-path').value = state.sync.path;
+    $('#sync-branch').value = state.sync.branch;
+    $('#sync-token').value = state.sync.token;
+    $('#sync-device').value = state.sync.device;
+    renderSyncStatus();
+
     $('#sp-id').value = state.spotify.clientId;
     $('#sp-secret').value = state.spotify.clientSecret;
     renderSpotifyStatus();
@@ -2856,6 +3153,103 @@
 
   /* ──────────────────────────── shell ──────────────────────────── */
 
+
+  function renderSyncStatus() {
+    var el = document.getElementById('sync-status');
+    if (!el) return;
+    var s = state.sync;
+    if (!syncConfigured()) {
+      el.className = 'sync-status';
+      el.textContent = 'Not connected — this device keeps its own copy.';
+    } else {
+      var label = {
+        idle: 'In sync', pending: 'Saving shortly…', pulling: 'Pulling…',
+        pushing: 'Saving…', conflict: 'Conflict', error: 'Problem'
+      }[syncState] || syncState;
+      el.className = 'sync-status is-' + syncState;
+      el.textContent = label + (syncNote ? ' — ' + syncNote : '') +
+        (s.remoteAt ? '  ·  repo copy ' + new Date(s.remoteAt).toLocaleString() : '');
+    }
+    var conflict = syncState === 'conflict';
+    var push = document.getElementById('sync-push');
+    if (push) push.textContent = conflict ? 'Overwrite repo copy' : 'Push now';
+  }
+
+  function wireSync() {
+    var f = function (id) { return document.getElementById(id); };
+
+    f('sync-save').addEventListener('click', function () {
+      state.sync.owner = f('sync-owner').value.trim();
+      state.sync.repo = f('sync-repo').value.trim();
+      state.sync.path = f('sync-path').value.trim() || 'library.json';
+      state.sync.branch = f('sync-branch').value.trim() || 'main';
+      state.sync.token = f('sync-token').value.trim();
+      state.sync.device = f('sync-device').value.trim() || guessDeviceName();
+      state.sync.sha = null;
+      save(true);
+      if (!syncConfigured()) { renderSyncStatus(); toast('Owner, repo and token are all needed.'); return; }
+      syncNote = 'Connecting…';
+      renderSyncStatus();
+      syncPull(true).then(function (got) {
+        if (got) { toast('Connected — library loaded from GitHub.'); return; }
+        if (syncState === 'error') { toast('Could not connect: ' + syncNote); return; }
+        // Empty repo file: seed it from what this device already has.
+        syncPush(true).then(function (ok) {
+          toast(ok ? 'Connected — this library is now the repo copy.' : 'Could not write: ' + syncNote);
+        });
+      });
+    });
+
+    f('sync-pull').addEventListener('click', function () {
+      if (!syncConfigured()) { toast('Fill in the repository and token first.'); return; }
+      syncPull(false);
+    });
+
+    f('sync-push').addEventListener('click', function () {
+      if (!syncConfigured()) { toast('Fill in the repository and token first.'); return; }
+      clearTimeout(syncTimer);
+      var forcing = syncState === 'conflict';
+      if (forcing && !confirm('Overwrite the repo copy with this device\'s library?\n\n' +
+        'Anything saved from another device since this one loaded will be lost.')) return;
+      if (forcing) {
+        // Take the current sha so the write is accepted, then overwrite.
+        ghFetch(ghUrl('?ref=' + encodeURIComponent(state.sync.branch || 'main')),
+          { headers: ghHeaders() }).then(function (meta) {
+            state.sync.sha = meta.missing ? null : meta.sha;
+            syncPush(true).then(function (ok) { if (ok) toast('Repo copy overwritten.'); });
+          }, function () { syncPush(true); });
+      } else {
+        syncPush(false).then(function (ok) { if (ok) toast('Pushed to GitHub.'); });
+      }
+    });
+
+    f('sync-forget').addEventListener('click', function () {
+      state.sync.token = '';
+      state.sync.sha = null;
+      f('sync-token').value = '';
+      save(true);
+      syncState = 'idle';
+      syncNote = '';
+      renderSyncStatus();
+      toast('Token removed from this device.');
+    });
+
+    // Coming back to the tab is the moment another device's changes matter.
+    window.addEventListener('focus', function () {
+      if (syncConfigured() && syncState !== 'conflict' && !syncBusy) syncPull(true);
+    });
+
+    // A queued push cannot be completed during unload: sendBeacon cannot carry
+    // an Authorization header, and the payload is far past what keepalive
+    // allows. So ask, rather than pretend.
+    window.addEventListener('beforeunload', function (e) {
+      if (syncPending() ) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+  }
+
   function applyTheme() {
     document.documentElement.dataset.theme = state.settings.theme;
   }
@@ -2937,9 +3331,13 @@
     wireImport();
     wireGenreOrder();
     wireBulk();
+    wireSync();
 
     render();
     save();
+
+    // Pull straight away so a device that has been away starts current.
+    if (syncConfigured()) syncPull(true);
 
     var hash = (location.hash || '').replace('#', '');
     show(['today', 'library', 'played', 'settings'].indexOf(hash) > -1 ? hash : 'today');

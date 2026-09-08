@@ -890,3 +890,12 @@ body[data-sidebar="collapsed"] .sidebar { display: none; }
 .ver-btn:disabled { opacity: 1; color: var(--text-dim); cursor: default; }
 /* No hover on a touch screen, so it has to stay visible there. */
 @media (hover: none), (max-width: 620px) { .ver-btn { opacity: 1; } }
+
+/* sync status */
+.sync-status { margin-top: 12px; font-size: 13px; color: var(--text-dim); }
+.sync-status.is-conflict { color: var(--star); }
+.sync-status.is-error { color: var(--danger); }
+.sync-status.is-pushing, .sync-status.is-pulling, .sync-status.is-pending { color: var(--accent); }
+#sync-owner, #sync-repo, #sync-branch { width: 130px; }
+#sync-path, #sync-token, #sync-device { width: 190px; }
+#sync-token { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
