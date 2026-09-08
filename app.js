@@ -2059,7 +2059,7 @@
       if (!confirm('Delete ' + word + ' from the library? This cannot be undone.')) return;
       albums.forEach(function (a) {
         state.library.splice(state.library.indexOf(a), 1);
-        if (!a.custom) state.deletedSeedIds.push(a.id);
+        state.deletedSeedIds.push(a.id);   // seed now holds every album, so always tombstone
         if (state.session) {
           state.session.slots = state.session.slots.filter(function (sl) { return sl.albumId !== a.id; });
         }
@@ -2231,7 +2231,7 @@
       } else if (act === 'del') {
         if (!confirm('Delete “' + a.name + '” from the library?')) return;
         state.library.splice(state.library.indexOf(a), 1);
-        if (!a.custom) state.deletedSeedIds.push(a.id);
+        state.deletedSeedIds.push(a.id);   // seed now holds every album, so always tombstone
         if (state.session) {
           state.session.slots = state.session.slots.filter(function (s) { return s.albumId !== a.id; });
         }
