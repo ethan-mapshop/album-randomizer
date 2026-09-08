@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Album Randomizer</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#127909;</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn" id="sidebar-toggle" title="Hide or show the sidebar"
+          aria-label="Hide or show the sidebar" aria-expanded="true">☰</button>
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <h1>Album Randomizer</h1>
+  </div>
+  <button class="icon-btn" id="theme-toggle" title="Toggle light / dark" aria-label="Toggle light or dark theme">◐</button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <nav class="tabs" role="tablist" aria-orientation="vertical" aria-label="Sections">
+      <button class="tab" role="tab" data-view="today">Today</button>
+      <button class="tab" role="tab" data-view="library">Library</button>
+      <button class="tab" role="tab" data-view="played">Played</button>
+      <button class="tab" role="tab" data-view="settings">Settings</button>
+    </nav>
+
+    <!-- Shown only on Library and Played; the counts mean different things on
+         each, so the list is rebuilt when the view changes. -->
+    <div class="side-genres" id="side-genres">
+      <h2 class="side-head">Genres</h2>
+      <div class="glist" id="genre-list"></div>
+    </div>
+  </aside>
+
+<main>
+  <!-- ───────────────────────── TODAY ───────────────────────── -->
+  <section class="view" id="view-today" hidden>
+    <div class="day-head">
+      <div class="day-head-main">
+        <p class="day-date" id="day-date"></p>
+        <h2 id="day-title">Today's playlist</h2>
+        <p class="day-sub" id="day-sub"></p>
+      </div>
+      <div class="day-actions">
+        <button class="btn btn-primary" id="finish-day">Finish day</button>
+        <button class="btn" id="copy-day">Copy list</button>
+        <button class="btn btn-quiet" id="reset-day">Start over</button>
+      </div>
+    </div>
+
+    <div class="meter" id="meter">
+      <div class="meter-bar">
+        <div class="meter-fill" id="meter-fill"></div>
+        <div class="meter-ghost" id="meter-ghost"></div>
+      </div>
+      <div class="meter-legend">
+        <span><b id="meter-added">0m</b> added<span class="dim" id="meter-count"></span></span>
+        <span class="dim" id="meter-planned"></span>
+        <span class="dim">target <b id="meter-target"></b></span>
+      </div>
+    </div>
+
+    <p class="hint">Original tracklists only — skip the remixes, demos and bonus cuts on deluxe / special editions.</p>
+
+    <div class="slots" id="slots"></div>
+
+    <div class="slot-tail">
+      <button class="btn" id="add-slot">+ One more album</button>
+      <span class="dim" id="tail-note"></span>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── LIBRARY ───────────────────────── -->
+  <section class="view" id="view-library" hidden>
+    <div class="lib-frozen">
+      <div class="view-head">
+        <h2>Library</h2>
+        <p class="dim" id="library-summary"></p>
+      </div>
+
+      <div class="toolbar">
+        <input type="search" id="lib-search" placeholder="Search artist or album…" autocomplete="off">
+        <select id="lib-genre" title="Genre"></select>
+        <select id="lib-status">
+          <option value="unplayed">Unplayed</option>
+          <option value="all">All</option>
+          <option value="played">Played</option>
+          <option value="fav">Favorites</option>
+          <option value="review">Needs review</option>
+          <option value="nolength">No length yet</option>
+          <option value="noyear">No release year</option>
+          <option value="norym">No RYM score</option>
+        </select>
+        <select id="lib-decade" title="Release decade"></select>
+        <select id="lib-rym" title="RateYourMusic score band"></select>
+        <select id="lib-length" title="Album length band"></select>
+        <label class="check" title="Select every album matching the current filter">
+          <input type="checkbox" id="lib-all"> Select all</label>
+        <button class="btn" id="lib-fetch">Fetch from Spotify</button>
+        <button class="btn" id="lib-export">Export CSV</button>
+        <button class="btn" id="show-add">+ Add album</button>
+      </div>
+
+      <form class="add-form" id="add-form" hidden>
+        <input type="text" id="add-artist" placeholder="Artist">
+        <input type="text" id="add-title" placeholder="Album" required>
+        <select id="add-genre" required></select>
+        <label class="numbox"><input type="number" id="add-year" min="1900" max="2100" step="1"
+          placeholder="—" aria-label="Release year"> yr</label>
+        <label class="numbox"><input type="number" id="add-rym" min="0" max="5" step="any"
+          placeholder="—" aria-label="RateYourMusic score"> rym</label>
+        <label class="mins"><input type="number" id="add-mins" min="1" max="300" placeholder="—"> min</label>
+        <label class="check"><input type="checkbox" id="add-fav"> Favorite</label>
+        <button class="btn btn-primary" type="submit">Add</button>
+        <button class="btn btn-quiet" type="button" id="cancel-add">Cancel</button>
+      </form>
+
+      <div class="bulk" id="bulk-bar" hidden></div>
+
+      <div class="fetch-bar" id="lib-fetch-bar" hidden>
+        <div class="meter-bar"><div class="meter-fill" id="lib-fetch-fill"></div></div>
+        <p class="dim" id="lib-fetch-log"></p>
+        <button class="btn btn-quiet" id="lib-fetch-stop">Stop</button>
+      </div>
+    </div>
+
+    <!-- The headings live inside the scrolling box, not above it, so the
+         scrollbar takes its width out of both and the columns stay lined up. -->
+    <div class="lib-scroll">
+      <div class="row-head">
+        <span class="rh-tick"></span>
+        <span class="row-main">Artist · Album</span>
+        <span class="row-genre">Genre</span>
+        <span class="row-year">Year</span>
+        <span class="row-rym">RYM</span>
+        <span class="row-len">Length</span>
+        <span class="row-tracks">Tracks</span>
+        <span class="row-spid">Spotify ID</span>
+        <span class="row-tools"></span>
+      </div>
+      <div class="rows" id="lib-rows"></div>
+    </div>
+    <p class="dim center" id="lib-more"></p>
+  </section>
+
+  <!-- ───────────────────────── PLAYED ───────────────────────── -->
+  <section class="view" id="view-played" hidden>
+    <div class="view-head">
+      <h2>Played</h2>
+      <p class="dim" id="played-summary"></p>
+    </div>
+    <div id="played-list"></div>
+  </section>
+
+  <!-- ───────────────────────── SETTINGS ───────────────────────── -->
+  <section class="view" id="view-settings" hidden>
+    <div class="view-head"><h2>Settings</h2></div>
+
+    <div class="panel">
+      <h3>Daily build</h3>
+      <label class="field">
+        <span>Playlist target</span>
+        <span class="field-input"><input type="number" id="set-target" min="1" max="24" step="0.5"> hours</span>
+      </label>
+      <label class="field">
+        <span>Assumed album length</span>
+        <span class="field-input"><input type="number" id="set-length" min="5" max="200" step="1"> minutes</span>
+        <small>Used to decide how many albums a day needs. Override any single album on its card.</small>
+      </label>
+      <label class="field">
+        <span>Favorites bonus pick</span>
+        <span class="field-input"><input type="checkbox" id="set-fav-bonus"></span>
+        <small>Adds one extra draw from the Favorites list, outside the genre rotation.</small>
+      </label>
+      <label class="field">
+        <span>Open Spotify in the app</span>
+        <span class="field-input"><input type="checkbox" id="set-desktop-links"></span>
+        <small>Uses <code>spotify:</code> links, which the desktop app handles. Turn this off to
+          open the web player instead. Your browser will ask permission the first time.</small>
+      </label>
+      <label class="field">
+        <span>Next day starts with</span>
+        <span class="field-input"><select id="set-rotation"></select></span>
+        <small>Normally advances on its own to the genre after the last one you used.</small>
+      </label>
+    </div>
+
+    <div class="panel">
+      <h3>Album lengths</h3>
+      <p class="dim">Reads real running times from Spotify, so the target means something and each
+        card can link straight to the album instead of a search.
+        <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Create a free app</a>,
+        then paste its credentials here.</p>
+      <label class="field">
+        <span>Client ID</span>
+        <span class="field-input"><input type="text" id="sp-id" spellcheck="false" autocomplete="off"></span>
+      </label>
+      <label class="field">
+        <span>Client secret</span>
+        <span class="field-input"><input type="password" id="sp-secret" spellcheck="false" autocomplete="off"></span>
+        <small>Kept in this browser only, and never sent anywhere but Spotify. It is a catalogue
+          credential: it cannot read or change your account, playlists or listening history.</small>
+      </label>
+      <div class="btn-row">
+        <button class="btn" id="sp-save">Save &amp; test</button>
+        <button class="btn btn-quiet" id="sp-clear">Forget credentials</button>
+        <button class="btn btn-quiet" id="sp-probe">Check API access</button>
+      </div>
+      <p class="sp-status" id="sp-status"></p>
+      <div class="probe" id="sp-probe-out" hidden></div>
+
+      <div class="sp-run">
+        <div class="btn-row">
+          <button class="btn btn-primary" id="sp-run">Look up album lengths</button>
+          <button class="btn" id="sp-stop" hidden>Stop</button>
+          <label class="check"><input type="checkbox" id="sp-retry"> Retry albums that came up empty</label>
+        </div>
+        <div id="sp-progress" hidden>
+          <div class="meter-bar"><div class="meter-fill" id="sp-fill"></div></div>
+          <p class="dim" id="sp-log"></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Bulk import</h3>
+      <p class="dim">Add albums from a spreadsheet. Reads <code>.xlsx</code> and <code>.csv</code>.
+        Either a sheet with <b>Artist</b> / <b>Album</b> / <b>Genre</b> / <b>Runtime</b> columns,
+        or the original layout with one genre per column. Nothing is added until you confirm.</p>
+      <div class="btn-row">
+        <button class="btn" id="imp-pick">Choose a spreadsheet…</button>
+        <input type="file" id="imp-file" accept=".xlsx,.csv,.tsv,.txt" hidden>
+      </div>
+      <div id="imp-preview" hidden></div>
+    </div>
+
+    <div class="panel">
+      <h3>Genres</h3>
+      <p class="dim">Rotation order. New genres go to the end.</p>
+      <ol class="genre-order" id="genre-order"></ol>
+      <form class="inline-form" id="genre-form">
+        <input type="text" id="new-genre" placeholder="New genre name">
+        <button class="btn" type="submit">Add genre</button>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h3>Your data</h3>
+      <p class="dim">Everything lives in this browser's local storage. Export regularly if it matters.</p>
+      <div class="btn-row">
+        <button class="btn" id="export-json">Export JSON</button>
+        <button class="btn" id="copy-json">Copy JSON</button>
+        <button class="btn" id="import-json">Import JSON</button>
+        <input type="file" id="import-file" accept="application/json,.json" hidden>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-danger" id="clear-played">Clear all played</button>
+        <button class="btn btn-danger" id="reset-all">Reset to spreadsheet</button>
+      </div>
+    </div>
+  </section>
+  </main>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="albums.js"></script>
+<script src="sheet-import.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

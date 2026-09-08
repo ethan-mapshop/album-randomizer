@@ -1,0 +1,10 @@
+# Library exports. These carry the Spotify client secret and access token in
+# plain text, and are snapshots of local state rather than source.
+album-randomizer-*.json
+
+# Local machine settings
+.claude/settings.local.json
+
+# Windows
+Thumbs.db
+desktop.ini

@@ -1,0 +1,892 @@
+/* ─────────────────────────── tokens ─────────────────────────── */
+:root {
+  --bg: #0e0f13;
+  --bg-raised: #16181f;
+  --bg-sunk: #0a0b0e;
+  --line: #262a35;
+  --line-soft: #1d212a;
+  --text: #e8eaf0;
+  --text-dim: #8b93a7;
+  --text-faint: #5c6478;
+  --accent: #5eead4;
+  --accent-ink: #07110f;
+  --danger: #f87171;
+  --star: #fbbf24;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.25);
+  --sat: 55%;
+  --lum: 62%;
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg: #f6f7f9;
+  --bg-raised: #ffffff;
+  --bg-sunk: #eceef2;
+  --line: #dfe3ea;
+  --line-soft: #e9ecf1;
+  --text: #14161c;
+  --text-dim: #5f6779;
+  --text-faint: #8c94a6;
+  --accent: #0d9488;
+  --accent-ink: #ffffff;
+  --danger: #dc2626;
+  --star: #d97706;
+  --shadow: 0 1px 2px rgba(16,20,30,.06), 0 8px 24px rgba(16,20,30,.07);
+  --sat: 48%;
+  --lum: 42%;
+  color-scheme: light;
+}
+
+/* Stated once because the sidebar, the bulk bar and the library's own height
+   all measure from the bottom of the top bar. Pinned rather than left to its
+   contents, so changing what sits in the bar cannot silently break them. */
+:root { --topbar-h: 56px; }
+
+* { box-sizing: border-box; }
+
+/* Class-level display rules would otherwise beat the UA's [hidden] rule. */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -.01em; }
+h1 { font-size: 16px; }
+h2 { font-size: 22px; }
+h3 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); }
+p { margin: 0; }
+.dim { color: var(--text-dim); }
+.center { text-align: center; }
+
+/* ─────────────────────────── top bar ─────────────────────────── */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: var(--topbar-h);
+  padding: 0 20px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+/* The nav has moved to the sidebar, so the brand takes over pushing the theme
+   toggle to the far edge. */
+.brand { display: flex; align-items: center; gap: 10px; margin-right: auto; }
+.brand-mark {
+  width: 20px; height: 20px; border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, var(--bg) 0 18%, var(--accent) 19% 100%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* ─────────────────────────── shell ─────────────────────────── */
+/* Sidebar beside the content, both below the full-width top bar. */
+.shell { display: flex; align-items: flex-start; }
+
+.sidebar {
+  position: sticky;
+  top: var(--topbar-h);   /* clears the top bar, which stays sticky */
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  /* "Omen of the Deep" needs 147px as a row; the rest is the list's own
+     padding, the scrollbar it earns at 21 genres, and room to breathe. */
+  width: 208px;
+  height: calc(100vh - var(--topbar-h));
+  border-right: 1px solid var(--line-soft);
+}
+.tabs { flex: 0 0 auto; display: flex; flex-direction: column; gap: 2px; padding: 22px 12px 14px; }
+
+/* Only Library and Played filter by genre, so the list is absent elsewhere
+   rather than sitting there doing nothing. */
+.side-genres { display: none; }
+body[data-view="library"] .side-genres,
+body[data-view="played"] .side-genres {
+  flex: 1 1 auto;
+  min-height: 0;          /* lets the list below actually scroll */
+  display: flex;
+  flex-direction: column;
+  padding: 0 12px 14px;
+  border-top: 1px solid var(--line-soft);
+}
+.side-head {
+  flex: 0 0 auto;
+  padding: 13px 8px 7px;
+  font-size: 11px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-faint);
+}
+.glist { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.gitem {
+  --h: 170;
+  flex: 0 0 auto;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  padding: 5px 8px;
+  border: 0; border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit; font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.gitem:hover { background: var(--bg-raised); }
+/* The name may be longer than the column; the count must never be squeezed. */
+.gitem b { min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gitem span { flex: 0 0 auto; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-faint); }
+.gitem:not(.gitem-all) b { color: hsl(var(--h) var(--sat) var(--lum)); }
+.gitem.on { background: hsl(var(--h) var(--sat) var(--lum) / .16); }
+.gitem-all.on { background: var(--bg-raised); }
+.gitem.on b { font-weight: 650; }
+.gitem.on span { color: var(--text-dim); }
+.tab {
+  padding: 8px 14px;
+  border: 0;
+  /* Rounded rectangle rather than the old pill: stacked full-width pills read
+     as buttons, this reads as a list. */
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.tab:hover { color: var(--text); background: var(--bg-raised); }
+.tab[aria-selected="true"] { color: var(--accent-ink); background: var(--accent); font-weight: 600; }
+
+.icon-btn {
+  width: 32px; height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font-size: 15px;
+  cursor: pointer;
+}
+.icon-btn:hover { color: var(--text); }
+
+/* min-width:0 so the library's fixed columns can never force the shell wider
+   than the window. */
+main { flex: 1 1 auto; min-width: 0; max-width: 1180px; margin: 0 auto; padding: 26px 20px 80px; }
+
+/* ─────────────────────────── buttons ─────────────────────────── */
+.btn {
+  padding: 7px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.35;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+.btn-primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+.btn-primary:hover { filter: brightness(1.08); }
+.btn-quiet { background: transparent; color: var(--text-dim); border-color: transparent; }
+.btn-quiet:hover { color: var(--text); border-color: var(--line); }
+.btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, var(--line)); background: transparent; }
+.btn-danger:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); border-color: var(--danger); }
+.btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+input[type="text"], input[type="search"], input[type="number"], input[type="password"], select {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunk);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+input:focus-visible, select:focus-visible, .btn:focus-visible, .tab:focus-visible, .icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ─────────────────────────── today ─────────────────────────── */
+.day-head { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; margin-bottom: 18px; }
+.day-head-main { flex: 1 1 320px; }
+.day-date { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--text-faint); }
+.day-title-row { display: flex; align-items: baseline; gap: 10px; }
+.day-sub { color: var(--text-dim); font-size: 14px; margin-top: 4px; }
+.day-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.meter { margin-bottom: 14px; }
+.meter-bar {
+  position: relative;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--bg-sunk);
+  border: 1px solid var(--line-soft);
+  overflow: hidden;
+}
+.meter-fill, .meter-ghost {
+  position: absolute; top: 0; bottom: 0; left: 0;
+  border-radius: 999px;
+  transition: width .25s ease;
+}
+.meter-fill { background: var(--accent); z-index: 2; }
+/* Planned-but-not-yet-added reads as hatching, never as progress. */
+.meter-ghost {
+  z-index: 1;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--accent) 30%, transparent) 0 3px,
+    transparent 3px 8px
+  );
+}
+.meter-legend {
+  display: flex; gap: 16px; flex-wrap: wrap;
+  margin-top: 7px;
+  font-size: 13px;
+}
+.meter-legend b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+.hint {
+  font-size: 13px;
+  color: var(--text-faint);
+  border-left: 2px solid var(--line);
+  padding-left: 10px;
+  margin-bottom: 20px;
+}
+
+.slots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+  align-items: start; /* expanding one card must not stretch its neighbour */
+  gap: 12px;
+}
+
+.slot {
+  --h: 170;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 15px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow);
+}
+.slot.is-added {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, var(--bg-raised)), var(--bg-raised));
+}
+.slot.is-empty { opacity: .72; }
+.slot.is-bonus { border-style: dashed; }
+
+.slot-top { display: flex; align-items: center; gap: 8px; margin-bottom: 11px; }
+.slot-num {
+  font-size: 11px; font-weight: 700;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.genre-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  color: hsl(var(--h) var(--sat) var(--lum));
+  background: hsl(var(--h) var(--sat) var(--lum) / .13);
+  border: 1px solid hsl(var(--h) var(--sat) var(--lum) / .3);
+}
+.slot-close {
+  margin-left: auto;
+  width: 22px; height: 22px;
+  border: 0; border-radius: 6px;
+  background: transparent; color: var(--text-faint);
+  font-size: 15px; line-height: 1; cursor: pointer;
+}
+.slot-close:hover { background: var(--bg-sunk); color: var(--danger); }
+
+.slot-artist { font-size: 13px; color: var(--text-dim); }
+.slot-album {
+  font-size: 17px;
+  font-weight: 620;
+  line-height: 1.28;
+  letter-spacing: -.01em;
+  text-transform: none;
+  color: var(--text);
+  margin: 1px 0 2px;
+  overflow-wrap: anywhere;
+}
+.slot-album .star { color: var(--star); font-size: 13px; vertical-align: 2px; margin-left: 4px; }
+.slot-empty-note { color: var(--text-dim); font-size: 14px; padding: 6px 0 10px; }
+
+.slot-actions { display: flex; align-items: center; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+.slot-actions .btn { padding: 6px 10px; font-size: 13px; }
+.add-btn { min-width: 78px; }
+.slot.is-added .add-btn { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+.slot-year { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.slot-nums { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.slot-nums .mins { margin-left: 0; }
+.rym, .trk {
+  display: inline-flex; align-items: center; gap: 3px;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+.rym.is-known, .trk.is-known { color: var(--text-dim); }
+.rym input, .trk input {
+  width: 52px;
+  padding: 5px 6px;
+  text-align: right;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+}
+.trk input { width: 44px; }   /* one to three digits, never four */
+.rym input::-webkit-outer-spin-button, .trk input::-webkit-outer-spin-button,
+.rym input::-webkit-inner-spin-button, .trk input::-webkit-inner-spin-button {
+  -webkit-appearance: none; margin: 0;
+}
+.mins {
+  display: inline-flex; align-items: center; gap: 3px;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+.mins input {
+  width: 48px;
+  padding: 5px 6px;
+  text-align: right;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+}
+.mins input::-webkit-outer-spin-button,
+.mins input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+.alts { margin-top: 10px; border-top: 1px solid var(--line-soft); padding-top: 8px; }
+.alts summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  list-style: none;
+}
+.alts summary::-webkit-details-marker { display: none; }
+.alts summary::before { content: "▸ "; }
+.alts[open] summary::before { content: "▾ "; }
+.alts summary:hover { color: var(--text-dim); }
+.alt {
+  display: block; width: 100%;
+  padding: 6px 8px;
+  margin-top: 3px;
+  border: 0; border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit; font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.alt:hover { background: var(--bg-sunk); color: var(--text); }
+
+.slot-tail { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.slot-tail .dim { font-size: 13px; }
+
+/* ─────────────────────────── library ─────────────────────────── */
+.view-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.view-head p { font-size: 14px; }
+
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+/* Narrow basis so nine controls still share one line; it grows into whatever
+   slack is left, so on a wide window the search box is still the big one. */
+.toolbar input[type="search"] { flex: 1 1 180px; }
+
+.add-form, .inline-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+/* Narrow enough that artist, album, genre, year, score, length and the buttons
+   all fit one line at full width — a second line costs a row off the list. */
+.add-form input[type="text"] { flex: 1 1 170px; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--text-dim); }
+
+/* The library is sized to the window and scrolls its own list, rather than the
+   page scrolling underneath a sticky header. Everything above the list is then
+   simply fixed by construction — no sticky offsets to keep in step with the
+   genre chips wrapping or the bulk bar appearing. */
+body[data-view="library"] main { padding-bottom: 24px; }
+/* The library is a wide table and gains from room the other views do not need,
+   so it drops the shared 1180px cap and instead takes 90% of whatever is left
+   beside the sidebar — the remaining tenth keeping it off both edges. */
+body[data-view="library"] main { max-width: none; }
+#view-library:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  width: 90%;
+  margin-left: auto;
+  margin-right: auto;
+  height: calc(100vh - var(--topbar-h) - 50px);   /* main padding: 26 top, 24 bottom */
+}
+.lib-frozen { flex: 0 0 auto; }
+/* Sticky was for the old page-scrolling layout; nothing scrolls past it now. */
+.lib-frozen .bulk { position: static; }
+
+.lib-scroll {
+  flex: 1 1 auto;
+  min-height: 140px;      /* a couple of rows survive even a very short window */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+#lib-more { flex: 0 0 auto; margin-top: 10px; }
+
+/* Column widths live here rather than on the cells, because the header and the
+   rows have to agree on every one of them. Year, RYM and Length were already
+   fixed; the genre badge was the one that varied and dragged the rest sideways. */
+#view-library {
+  --col-year: 44px;
+  --col-rym: 42px;
+  --col-len: 52px;
+  --col-genre: 120px;     /* fits "Omen of the Deep", the longest so far */
+  --col-tracks: 54px;     /* driven by the heading, not the one or two digits */
+  --col-spid: 152px;      /* a Spotify album id is always 22 characters */
+  --col-tools: 140px;
+}
+#lib-rows .row-year,  .row-head .row-year  { width: var(--col-year); min-width: 0; }
+#lib-rows .row-rym,   .row-head .row-rym   { width: var(--col-rym); min-width: 0; }
+#lib-rows .row-len,   .row-head .row-len   { width: var(--col-len); min-width: 0; }
+#lib-rows .row-genre, .row-head .row-genre { width: var(--col-genre); text-align: center; }
+/* Flex rather than a line box: wrapping the badge in a span gave it inline
+   leading, which made every row 6px taller than the badge itself needs. */
+#lib-rows .row-genre { display: flex; align-items: center; justify-content: center; }
+#lib-rows .row-tracks, .row-head .row-tracks { width: var(--col-tracks); }
+#lib-rows .row-spid,   .row-head .row-spid   { width: var(--col-spid); }
+#lib-rows .row-tools, .row-head .row-tools { width: var(--col-tools); justify-content: flex-end; }
+/* A name longer than the column truncates rather than breaking the alignment. */
+#lib-rows .genre-badge {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Pinned to the top of the scrolling box it sits inside, so the rows pass
+   beneath it. Opaque, or they would show through. */
+.row-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex; align-items: center; gap: 12px;
+  padding: 7px 14px;
+  background: var(--bg-sunk);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.rh-tick { flex: 0 0 auto; width: 16px; }
+/* The scrolling box carries the frame now; the list inside it is plain. */
+#lib-rows { border: 0; border-radius: 0; background: transparent; overflow: visible; }
+
+.rows { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--bg-raised); }
+.row {
+  --h: 170;
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.row:last-child { border-bottom: 0; }
+.row:hover { background: color-mix(in srgb, var(--text) 3%, var(--bg-raised)); }
+.row.is-played .row-name { color: var(--text-faint); text-decoration: line-through; text-decoration-color: var(--text-faint); }
+.row-main { flex: 1 1 auto; min-width: 0; }
+.row-name { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.row-name small { color: var(--text-dim); }
+.row-genre { flex: 0 0 auto; }
+.row-len {
+  flex: 0 0 auto;
+  min-width: 46px;
+  text-align: center;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.row-len.is-guess { color: var(--text-faint); }
+
+.row-year, .row-rym {
+  flex: 0 0 auto;
+  text-align: center;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.row-year { min-width: 32px; }
+.row-rym { min-width: 30px; }
+.row-year.is-blank, .row-rym.is-blank { color: var(--text-faint); }
+
+.row-tracks {
+  flex: 0 0 auto;
+  text-align: center;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.row-spid {
+  flex: 0 0 auto;
+  text-align: left;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Monospaced on the rows only — an id is for scanning and comparing, not
+   reading. The heading above keeps the same face as its neighbours. */
+#lib-rows .row-spid {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.row-tracks.is-blank, .row-spid.is-blank { color: var(--text-faint); }
+
+.picker { margin-top: 6px; border-top: 0; padding-top: 0; }
+.picker summary { color: var(--star); }
+.picker summary:hover { color: var(--star); text-decoration: underline; }
+.alt-meta { color: var(--text-faint); font-size: 12px; }
+.alt-none { color: var(--text-faint); font-style: italic; }
+.row-tools { display: flex; gap: 4px; flex: 0 0 auto; }
+.row-tools button {
+  width: 28px; height: 28px;
+  border: 0; border-radius: 6px;
+  background: transparent; color: var(--text-faint);
+  font-size: 14px; line-height: 1; cursor: pointer;
+}
+.row-tools button:hover { background: var(--bg-sunk); color: var(--text); }
+.row-tools .on { color: var(--star); }
+.row-tools .del:hover { color: var(--danger); }
+.row-empty { padding: 28px; text-align: center; color: var(--text-dim); }
+
+/* ─────────────────────────── played ─────────────────────────── */
+.day-group { margin-bottom: 22px; }
+.day-group h3 {
+  display: flex; align-items: baseline; gap: 10px;
+  margin-bottom: 8px;
+  text-transform: none; letter-spacing: 0; font-size: 15px; color: var(--text);
+}
+.day-group h3 span { font-size: 13px; color: var(--text-dim); font-weight: 400; }
+
+/* ─────────────────────────── settings ─────────────────────────── */
+.panel {
+  padding: 18px 20px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+.panel h3 { margin-bottom: 14px; }
+.panel > .dim { font-size: 13.5px; margin-bottom: 10px; }
+.field {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 4px 16px;
+  padding: 11px 0;
+  border-top: 1px solid var(--line-soft);
+  font-size: 14px;
+}
+.field:first-of-type { border-top: 0; }
+.field small { grid-column: 1 / -1; color: var(--text-faint); font-size: 12.5px; }
+.field-input { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 13px; }
+.field-input input[type="number"] { width: 74px; text-align: right; }
+.field-input input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--accent); }
+
+#sp-id, #sp-secret { width: min(280px, 46vw); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+
+.sp-status {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.sp-run {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+.sp-run .check { font-size: 13px; }
+#sp-progress { margin-top: 12px; }
+#sp-progress .meter-bar { height: 8px; }
+#sp-log { margin-top: 7px; font-size: 13px; font-variant-numeric: tabular-nums; }
+
+.mins.is-known { color: var(--text-dim); }
+.mins.is-known input { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+
+.genre-order { margin: 0 0 14px; padding-left: 22px; color: var(--text-dim); font-size: 14px; }
+.genre-order li { padding: 2px 0; }
+.genre-order .cur { color: var(--accent); font-weight: 600; }
+
+/* ─────────────────────────── toast ─────────────────────────── */
+.toast {
+  position: fixed;
+  left: 50%; bottom: 26px;
+  transform: translateX(-50%);
+  z-index: 50;
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: var(--shadow);
+}
+
+@media (max-width: 620px) {
+  .topbar { gap: 10px; padding: 10px 14px; }
+  /* A 176px sidebar leaves nothing beside it on a phone, so the nav goes back
+     to a horizontal strip — now pinned under the top bar rather than inside it. */
+  .shell { display: block; }
+  .sidebar {
+    position: static;
+    width: auto;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--bg);
+  }
+  .tabs { flex-direction: row; padding: 8px 14px; }
+  .tab { flex: 1; padding: 7px 6px; text-align: center; }
+  /* Wrapped chips rather than a tall column, capped so they cannot push the
+     content off screen. */
+  body[data-view="library"] .side-genres,
+  body[data-view="played"] .side-genres { border-top: 0; padding: 0 14px 10px; }
+  .side-head { padding: 2px 2px 6px; }
+  .glist { flex-direction: row; flex-wrap: wrap; gap: 4px; max-height: 92px; }
+  .gitem { border: 1px solid var(--line); padding: 3px 8px; }
+
+  /* Collapsed, the tabs move into the top bar. At this width the brand name has
+     to give way or the bar runs off the screen — the mark alone still reads. */
+  body[data-sidebar="collapsed"] .topbar { gap: 8px; }
+  body[data-sidebar="collapsed"] .brand h1 { display: none; }
+  body[data-sidebar="collapsed"] .topbar .tabs { min-width: 0; }
+  body[data-sidebar="collapsed"] .topbar .tab { padding: 6px 8px; font-size: 13px; }
+
+  main { padding: 20px 14px 60px; }
+  .slots { grid-template-columns: 1fr; }
+  .field { grid-template-columns: 1fr; }
+
+  /* Seven columns do not fit a phone: the name gets squeezed to nothing and
+     wraps a letter at a time. Give it the first line to itself and let the
+     numbers, genre and tools settle underneath. */
+  .row { flex-wrap: wrap; row-gap: 8px; }
+  .row-main { flex: 1 1 calc(100% - 40px); }
+  .row-tools { margin-left: auto; }
+
+  /* Folded rows have no columns left to head, and holding 300px of controls on
+     a phone would leave almost nothing to scroll. The whole view goes back to
+     flowing with the page, the way the bulk bar already does at this width. */
+  /* Full width on a phone — there is nothing to spare for a margin. */
+  #view-library:not([hidden]) { display: block; height: auto; width: auto; }
+  body[data-view="library"] main { padding-bottom: 60px; }
+  .lib-scroll { overflow-y: visible; min-height: 0; }
+  .row-head { display: none; }
+  #lib-rows .row-year, #lib-rows .row-rym, #lib-rows .row-len,
+  #lib-rows .row-genre, #lib-rows .row-tracks, #lib-rows .row-spid,
+  #lib-rows .row-tools { width: auto; }
+}
+
+.probe { margin-top: 10px; font-size: 13px; }
+.probe-row { padding: 3px 0; color: var(--text-dim); }
+.probe-row small { color: var(--text-faint); margin-left: 4px; }
+.probe-ok { color: var(--accent); font-weight: 700; }
+.probe-no { color: var(--danger); font-weight: 700; }
+
+/* An estimate must never read as a measured fact. */
+.row-len.is-approx { color: var(--star); }
+.mins.is-approx { color: var(--star); }
+.mins.is-approx input { border-color: color-mix(in srgb, var(--star) 40%, var(--line)); }
+
+/* inline album editor */
+.row.is-editing { background: var(--bg-sunk); padding: 12px 14px; }
+.row-edit { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; width: 100%; }
+.row-edit .edit-artist { flex: 1 1 150px; min-width: 0; }
+.row-edit .edit-title { flex: 2 1 200px; min-width: 0; }
+.row-edit .edit-genre { flex: 0 1 auto; }
+.row-edit .mins { margin-left: 0; }
+.row-edit .edit-mins { width: 62px; }
+.numbox {
+  display: inline-flex; align-items: center; gap: 3px;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+.numbox input {
+  padding: 5px 6px;
+  text-align: right;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+}
+.numbox input::-webkit-outer-spin-button,
+.numbox input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.row-edit .edit-year { width: 62px; }
+.row-edit .edit-rym { width: 62px; }
+.row-edit .edit-tracks { width: 54px; }
+.fetch-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; margin-bottom: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-raised));
+}
+.fetch-bar .meter-bar { flex: 0 0 160px; }
+.fetch-bar p { flex: 1 1 auto; min-width: 0; font-size: 12.5px; }
+.fetch-bar .btn { flex: 0 0 auto; padding: 4px 10px; font-size: 12.5px; }
+
+.add-form .mins { margin-left: 0; color: var(--text-faint); font-size: 12.5px; }
+.add-form .mins input { width: 62px; }
+.add-form .numbox input { width: 62px; }
+
+/* Both rows sit in the frozen block, where every pixel of height comes straight
+   off the list below. Sized as one unit so the controls stay on a common line. */
+.toolbar input, .toolbar select, .toolbar .btn, .toolbar .check,
+.add-form input, .add-form select, .add-form .btn, .add-form .check {
+  font-size: 12.5px;
+}
+.toolbar input, .toolbar select,
+.add-form input[type="text"], .add-form select { padding: 5px 8px; }
+.toolbar .btn, .add-form .btn { padding: 5px 10px; }
+.add-form .mins input, .add-form .numbox input { padding: 4px 6px; }
+
+/* U+270E points lower-right; every edit affordance convention points lower-left. */
+.row-tools [data-act="edit"] { display: inline-block; transform: scaleX(-1); }
+
+/* bulk import */
+#imp-preview { margin-top: 14px; }
+.imp-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; }
+.imp-head select { max-width: 220px; }
+.imp-summary { font-size: 13.5px; color: var(--text-dim); }
+.imp-summary b { color: var(--text); }
+.imp-warn { color: var(--star); }
+.imp-table { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; max-height: 260px; overflow-y: auto; }
+.imp-row { display: flex; gap: 10px; align-items: baseline; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); font-size: 13px; }
+.imp-row:last-child { border-bottom: 0; }
+.imp-row.dupe { color: var(--text-faint); }
+.imp-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.imp-tag { flex: 0 0 auto; font-size: 11.5px; color: var(--text-faint); }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
+
+/* sortable rotation list */
+.genre-order { list-style: none; padding-left: 0; }
+.genre-order li {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; margin-bottom: 4px;
+  border: 1px solid var(--line-soft); border-radius: var(--radius-sm);
+  background: var(--bg-sunk); cursor: grab;
+}
+.genre-order li.dragging { opacity: .4; cursor: grabbing; }
+.genre-order li.cur { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.genre-order .grip { color: var(--text-faint); font-size: 15px; line-height: 1; }
+.genre-order .gname { flex: 1 1 auto; color: hsl(var(--h) var(--sat) var(--lum)); font-weight: 600; }
+.genre-order .gcount { color: var(--text-faint); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.genre-order .gnext {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--accent-ink); background: var(--accent); padding: 2px 7px; border-radius: 999px;
+}
+.genre-order .gmove { display: flex; gap: 2px; }
+.genre-order .gmove button {
+  width: 24px; height: 24px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--text-faint); cursor: pointer; font-size: 13px; line-height: 1;
+}
+.genre-order .gmove button:hover:not(:disabled) { background: var(--bg-raised); color: var(--text); }
+.genre-order .gmove button:disabled { opacity: .25; cursor: default; }
+
+/* bulk selection */
+.bulk {
+  position: sticky; top: var(--topbar-h); z-index: 10;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 10px 12px; margin-bottom: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-raised));
+  box-shadow: var(--shadow);
+}
+.bulk .btn { padding: 5px 10px; font-size: 13px; }
+.bulk-count { font-weight: 650; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.bulk-move { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-dim); }
+.bulk-move select { padding: 5px 8px; font-size: 13px; }
+.bulk-sep { flex: 0 0 1px; align-self: stretch; background: var(--line); margin: 0 2px; }
+/* margin:0 — a checkbox carries a few pixels of default margin, which would
+   offset the name column from the heading sitting above it. */
+.row-tick { flex: 0 0 auto; width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.row.is-picked { background: color-mix(in srgb, var(--accent) 9%, var(--bg-raised)); }
+@media (max-width: 620px) { .bulk { position: static; } .bulk-sep { display: none; } }
+
+/* genre delete confirmation */
+.genre-order li.g-confirm {
+  cursor: default;
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-sunk));
+  flex-wrap: wrap;
+}
+.genre-order .gprompt { color: var(--text-dim); font-size: 13px; }
+.genre-order .g-confirm select { padding: 5px 8px; font-size: 13px; }
+.genre-order .g-confirm .btn { padding: 5px 10px; font-size: 13px; }
+.genre-order .gmove .del:hover:not(:disabled) { color: var(--danger); }
+
+/* ─────────────────── collapsible sidebar ─────────────────── */
+/* Collapsed, the sidebar is gone entirely and the tabs are moved into the top
+   bar by applySidebar() — so navigation survives, the genre list does not. */
+body[data-sidebar="collapsed"] .sidebar { display: none; }
+.topbar .tabs { flex-direction: row; gap: 4px; padding: 0; min-height: 0; }
+.topbar .tab { padding: 6px 12px; text-align: center; }
+
+/* ───────── narrow windows: drop columns, keep the name ─────────
+   Below this the fixed columns leave the album title under 200px and every
+   row wraps. Genre, year, score and the Spotify id go; length and tracks stay
+   because they are what the day is planned around. Of the row buttons only
+   "open in Spotify" and edit survive — favourite, played and delete are all
+   reachable from the edit row or in bulk. */
+@media (max-width: 1300px) {
+  #lib-rows .row-genre, .row-head .row-genre,
+  #lib-rows .row-year,  .row-head .row-year,
+  #lib-rows .row-rym,   .row-head .row-rym,
+  #lib-rows .row-spid,  .row-head .row-spid { display: none; }
+
+  #lib-rows .row-tools [data-act="fav"],
+  #lib-rows .row-tools [data-act="played"],
+  #lib-rows .row-tools [data-act="del"] { display: none; }
+
+  /* Two controls left, so the column shrinks to match rather than leaving a
+     gap the heading would no longer line up with. */
+  #view-library { --col-tools: 48px; }
+}
+
+/* ─────────────── "find a different version" ─────────────── */
+/* Sits at the end of the title, out of the way until the row is hovered so
+   3,000 rows are not peppered with icons. Focus reveals it for the keyboard. */
+.ver-btn {
+  border: 0;
+  padding: 1px 4px;
+  margin-left: 5px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.row:hover .ver-btn { opacity: 1; }
+.ver-btn:focus-visible { opacity: 1; }
+.ver-btn:hover { color: var(--accent); background: var(--bg-sunk); }
+.ver-btn:disabled { opacity: 1; color: var(--text-dim); cursor: default; }
+/* No hover on a touch screen, so it has to stay visible there. */
+@media (hover: none), (max-width: 620px) { .ver-btn { opacity: 1; } }
