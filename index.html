@@ -100,6 +100,7 @@
         <select id="lib-length" title="Album length band"></select>
         <label class="check" title="Select every album matching the current filter">
           <input type="checkbox" id="lib-all"> Select all</label>
+        <span class="bulk" id="bulk-bar" hidden></span>
         <button class="btn" id="lib-fetch">Fetch from Spotify</button>
         <button class="btn" id="lib-export">Export CSV</button>
         <button class="btn" id="show-add">+ Add album</button>
@@ -119,7 +120,6 @@
         <button class="btn btn-quiet" type="button" id="cancel-add">Cancel</button>
       </form>
 
-      <div class="bulk" id="bulk-bar" hidden></div>
 
       <div class="fetch-bar" id="lib-fetch-bar" hidden>
         <div class="meter-bar"><div class="meter-fill" id="lib-fetch-fill"></div></div>

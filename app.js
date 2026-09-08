@@ -1911,6 +1911,18 @@
     return Object.keys(selected).filter(function (id) { return selected[id] && byId(id); });
   }
 
+  // Lives inline in the toolbar rather than as a card that appears and pushes
+  // the rows down. The five state actions reuse the glyphs already on every
+  // row, so nothing new has to be learned; move-to-genre stays spelled out
+  // because it is the one in constant use.
+  var BULK_ICONS = [
+    ['fav', '★', 'Mark as favorite'],
+    ['unfav', '☆', 'Remove from favorites'],
+    ['played', '✓', 'Mark played'],
+    ['unplayed', '↺', 'Mark unplayed'],
+    ['delete', '✕', 'Delete from library']
+  ];
+
   function renderBulkBar() {
     var ids = selectedIds();
     var bar = $('#bulk-bar');
@@ -1918,18 +1930,18 @@
     bar.hidden = false;
     bar.innerHTML =
       '<span class="bulk-count">' + ids.length + ' selected</span>' +
-      '<label class="bulk-move">Move to' +
-        '<select id="bulk-genre">' + state.genres.map(function (g) {
+      '<select id="bulk-genre" title="Genre to move them to">' +
+        state.genres.map(function (g) {
           return '<option value="' + esc(g) + '">' + esc(g) + '</option>';
-        }).join('') + '</select></label>' +
+        }).join('') + '</select>' +
       '<button class="btn" type="button" data-bulk="move">Move</button>' +
       '<span class="bulk-sep"></span>' +
-      '<button class="btn" type="button" data-bulk="fav">★ Favorite</button>' +
-      '<button class="btn" type="button" data-bulk="unfav">Unfavorite</button>' +
-      '<button class="btn" type="button" data-bulk="played">Mark played</button>' +
-      '<button class="btn" type="button" data-bulk="unplayed">Mark unplayed</button>' +
+      BULK_ICONS.map(function (b) {
+        return '<button class="bulk-icon' + (b[0] === 'delete' ? ' del' : '') +
+          '" type="button" data-bulk="' + b[0] + '" title="' + esc(b[2]) + ' (' +
+          ids.length + ')">' + b[1] + '</button>';
+      }).join('') +
       '<span class="bulk-sep"></span>' +
-      '<button class="btn btn-danger" type="button" data-bulk="delete">Delete</button>' +
       '<button class="btn btn-quiet" type="button" data-bulk="clear">Clear</button>';
   }
 
