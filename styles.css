@@ -806,13 +806,19 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 .genre-order .gmove button:disabled { opacity: .25; cursor: default; }
 
 /* bulk selection */
-/* Sits inline in the toolbar, so selecting does not push the rows down. */
+/* Second toolbar row: filters above, everything that acts on the list here.
+   Always present and merely disabled when idle, so the row never reflows. */
+.toolbar.utils { align-items: center; }
+.utils-gap { flex: 1 1 auto; }        /* pushes the list-wide buttons right */
 .bulk {
   display: inline-flex; align-items: center; gap: 6px;
-  flex-wrap: wrap; max-width: 100%;   /* must never widen the page */
+  flex-wrap: wrap; max-width: 100%;
   padding: 0 4px 0 10px;
   border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
 }
+.bulk.is-idle { border-left-color: var(--line); }
+.bulk.is-idle .bulk-count { color: var(--text-faint); }
+.bulk :disabled { opacity: .4; cursor: not-allowed; }
 .bulk .btn { padding: 5px 10px; font-size: 13px; }
 .bulk-count {
   font-weight: 650; font-size: 13px; white-space: nowrap;

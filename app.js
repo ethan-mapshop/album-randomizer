@@ -1923,26 +1923,28 @@
     ['delete', '✕', 'Delete from library']
   ];
 
+  // Always rendered, disabled when nothing is selected. Showing and hiding it
+  // reflowed the toolbar every time a tick changed.
   function renderBulkBar() {
-    var ids = selectedIds();
+    var n = selectedIds().length;
+    var off = n ? '' : ' disabled';
     var bar = $('#bulk-bar');
-    if (!ids.length) { bar.hidden = true; bar.innerHTML = ''; return; }
-    bar.hidden = false;
+    bar.classList.toggle('is-idle', !n);
     bar.innerHTML =
-      '<span class="bulk-count">' + ids.length + ' selected</span>' +
-      '<select id="bulk-genre" title="Genre to move them to">' +
+      '<span class="bulk-count">' + (n ? n + ' selected' : 'none selected') + '</span>' +
+      '<select id="bulk-genre" title="Genre to move them to"' + off + '>' +
         state.genres.map(function (g) {
           return '<option value="' + esc(g) + '">' + esc(g) + '</option>';
         }).join('') + '</select>' +
-      '<button class="btn" type="button" data-bulk="move">Move</button>' +
+      '<button class="btn" type="button" data-bulk="move"' + off + '>Move</button>' +
       '<span class="bulk-sep"></span>' +
       BULK_ICONS.map(function (b) {
         return '<button class="bulk-icon' + (b[0] === 'delete' ? ' del' : '') +
-          '" type="button" data-bulk="' + b[0] + '" title="' + esc(b[2]) + ' (' +
-          ids.length + ')">' + b[1] + '</button>';
+          '" type="button" data-bulk="' + b[0] + '"' + off + ' title="' + esc(b[2]) +
+          (n ? ' (' + n + ')' : '') + '">' + b[1] + '</button>';
       }).join('') +
       '<span class="bulk-sep"></span>' +
-      '<button class="btn btn-quiet" type="button" data-bulk="clear">Clear</button>';
+      '<button class="btn btn-quiet" type="button" data-bulk="clear"' + off + '>Clear</button>';
   }
 
   function renderRows() {
