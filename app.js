@@ -1198,11 +1198,14 @@
 
     // A favourite served as a favourite stays in the pool; the same album drawn
     // from its genre is retired, which is what keeps it a once-only genre pick.
+    // Stamped when the day is finished, not when it was drawn. A day left open
+    // overnight is finished today, and that is the day it was listened to.
+    var finishedOn = today();
     var lastGenre = null, keptFav = 0;
     added.forEach(function (slot) {
       var a = byId(slot.albumId);
       if (slot.genreIndex === BONUS) { keptFav++; return; }
-      if (a) { a.played = true; a.playedAt = s.date; }
+      if (a) { a.played = true; a.playedAt = finishedOn; }
       lastGenre = slot.genreIndex;
     });
     if (lastGenre !== null) state.rotation = (lastGenre + 1) % state.genres.length;
