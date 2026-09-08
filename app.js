@@ -33,7 +33,7 @@
       rotation: 0,
       session: null,
       spotify: { clientId: '', clientSecret: '', token: null, tokenExp: 0 },
-      genreHues: null,
+      genreHues: SEED.genreHues ? JSON.parse(JSON.stringify(SEED.genreHues)) : null,
       settings: {
         targetMinutes: 480,
         defaultMinutes: 45,
@@ -46,11 +46,29 @@
     };
   }
 
+  // albums.js stores the library compactly: flags are 1 rather than true, and
+  // anything derivable from the Spotify id is left out and rebuilt here.
   function seedAlbum(s) {
     return {
-      id: s.id, name: s.name, artist: s.artist, title: s.title,
-      genre: s.genre, fav: s.fav, played: false, playedAt: null, custom: false,
-      year: s.year || null, rym: s.rym || null
+      id: s.id,
+      name: s.name,
+      artist: s.artist || '',
+      title: s.title || '',
+      genre: s.genre,
+      year: s.year || null,
+      rym: s.rym === 0 || s.rym ? s.rym : null,
+      minutes: s.minutes || null,
+      tracks: s.tracks || null,
+      fav: !!s.fav,
+      played: !!s.played,
+      playedAt: s.playedAt || null,
+      custom: !!s.custom,
+      approx: !!s.approx,
+      spotifyId: s.sp || null,
+      spotifyUrl: s.sp ? (s.spotifyUrl || 'https://open.spotify.com/album/' + s.sp) : null,
+      matchName: s.sp ? (s.matchName || ((s.artist ? s.artist + ' - ' : '') + s.title)) : null,
+      match: s.match || (s.sp ? 'auto' : null),
+      candidates: null
     };
   }
 
@@ -97,7 +115,7 @@
           st.library = saved.library;
           st.deletedSeedIds = saved.deletedSeedIds || [];
           st.deletedGenres = saved.deletedGenres || [];
-          st.genreHues = saved.genreHues || null;
+          st.genreHues = saved.genreHues || SEED.genreHues || null;
           st.rotation = saved.rotation || 0;
           st.session = saved.session || null;
           if (saved.spotify) {
