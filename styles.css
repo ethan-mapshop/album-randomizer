@@ -719,6 +719,11 @@ body[data-view="library"] main { max-width: none; }
 .row-edit .edit-genre { flex: 0 1 auto; }
 .row-edit .mins { margin-left: 0; }
 .row-edit .edit-mins { width: 62px; }
+/* Wide enough for a 22-character id; a pasted URL scrolls rather than wraps. */
+.row-edit .edit-spid {
+  flex: 0 1 190px; min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+}
 .numbox {
   display: inline-flex; align-items: center; gap: 3px;
   color: var(--text-faint);

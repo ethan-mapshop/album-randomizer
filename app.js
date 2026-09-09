@@ -1672,6 +1672,17 @@
 
   // Started life as "how many tracks the matched release has", and is becoming
   // "how many to take from it" — the two agree until you trim a deluxe edition.
+  // Takes a bare id, a spotify:album: URI, or an open.spotify.com URL with
+  // whatever tracking parameters came with it. Returns null for anything
+  // that is not a 22-character base62 album id.
+  function parseSpotifyId(raw) {
+    var t = String(raw == null ? '' : raw).trim();
+    if (!t) return null;
+    var m = t.match(/album[:\/]([A-Za-z0-9]{22})/);
+    if (m) return m[1];
+    return /^[A-Za-z0-9]{22}$/.test(t) ? t : null;
+  }
+
   function parseTracks(raw) {
     var n = parseInt(String(raw == null ? '' : raw).trim(), 10);
     if (isNaN(n) || n < 1) return null;
@@ -1854,6 +1865,9 @@
           ' value="' + (a.tracks || '') + '"> trk</label>' +
         '<label class="mins"><input type="number" class="edit-mins" min="1" max="300" placeholder="—" value="' +
           (a.minutes || '') + '"> min</label>' +
+        '<input type="text" class="edit-spid" spellcheck="false" placeholder="Spotify link or id"' +
+          ' title="Paste an album link or id to set the match by hand"' +
+          ' value="' + esc(a.spotifyId || '') + '">' +
         '<button class="btn btn-primary" type="submit">Save</button>' +
         '<button class="btn btn-quiet" type="button" data-act="cancel-edit">Cancel</button>' +
       '</form></div>';
@@ -2288,10 +2302,42 @@
       // to the next Spotify lookup.
       if (mins) a.approx = false;
 
+      // A pasted link is the last word on which release this is — it skips
+      // searching entirely, which is the only way to settle an album the
+      // matcher cannot find, such as a self-titled one under a common word.
+      var rawSpid = form.querySelector('.edit-spid').value.trim();
+      var spid = parseSpotifyId(rawSpid);
+      if (rawSpid && !spid) { toast('That is not a Spotify album link or id.'); return; }
+      var linkChanged = spid !== (a.spotifyId || null);
+      if (linkChanged) {
+        a.spotifyId = spid;
+        a.spotifyUrl = spid ? 'https://open.spotify.com/album/' + spid : null;
+        a.matchName = spid ? name : null;
+        a.match = spid ? 'manual' : null;
+        a.candidates = null;
+      }
+
       editingId = null;
       save();
       render();
       toast('Saved “' + name + '”');
+
+      // Fill in what the link knows, unless a runtime was typed alongside it.
+      if (linkChanged && spid && spConfigured() && !mins) {
+        resolveOne({ id: spid, name: title, artists: [{ name: artist }],
+          total_tracks: a.tracks || 0,
+          external_urls: { spotify: a.spotifyUrl } }).then(function (info) {
+          if (!info) return;
+          a.minutes = Math.round(info.ms / 60000);
+          a.tracks = info.tracks || a.tracks || null;
+          a.approx = !!info.approx;
+          save();
+          render();
+          toast(name + ' · ' + (a.approx ? '~' : '') + fmt(a.minutes));
+        }, function (err) {
+          toast('Linked, but could not read its length: ' + err.message);
+        });
+      }
     });
 
     $('#lib-export').addEventListener('click', function () {
