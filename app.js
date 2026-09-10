@@ -105,7 +105,8 @@
       match: s.match || (s.sp ? 'auto' : null),
       candidates: null,
       mode: s.mode === 'classical' ? 'classical' : null,
-      form: s.form || null
+      form: s.form || null,
+      trackIds: (s.trackIds && s.trackIds.length) ? s.trackIds.slice() : null
     };
   }
 
@@ -1335,6 +1336,11 @@
     if (a.mode === 'classical') {
       o.mode = 'classical';
       if (a.form) o.form = a.form;
+      // The album cache is rebuildable from Spotify and deliberately stays on
+      // the device that built it. A classical work's tracks are not: they came
+      // from a playlist export, so they are the record itself and must travel,
+      // or a second device gets the works and none of their music.
+      if (a.trackIds && a.trackIds.length) o.trackIds = a.trackIds;
     }
     if (a.approx) o.approx = 1;
     if (a.match && a.match !== 'auto') o.match = a.match;
@@ -3939,10 +3945,15 @@
   }
 
   function classicalStats() {
-    var have = 0;
-    state.library.forEach(function (a) { if (a.mode === 'classical') have++; });
+    var have = 0, timed = 0, tracked = 0;
+    state.library.forEach(function (a) {
+      if (a.mode !== 'classical') return;
+      have++;
+      if (a.minutes) timed++;
+      if (a.trackIds && a.trackIds.length) tracked++;
+    });
     var avail = (typeof CLASSICAL !== 'undefined' && CLASSICAL.works) ? CLASSICAL.works.length : 0;
-    return { have: have, available: avail };
+    return { have: have, available: avail, timed: timed, tracked: tracked };
   }
 
   function renderClassicalStatus() {
@@ -3952,7 +3963,8 @@
     box.textContent = !s.available
       ? 'classical.js did not load, so there is nothing to import.'
       : s.have
-        ? s.have + ' of ' + s.available + ' works are in the library.'
+        ? s.have + ' of ' + s.available + ' works in the library · ' + s.timed +
+          ' with a measured runtime · ' + s.tracked + ' carrying their tracks'
         : 'Not loaded yet — the classical deck is empty.';
   }
 
@@ -3966,13 +3978,30 @@
     var known = {}, gone = {};
     state.library.forEach(function (a) { known[a.id] = true; });
     (state.deletedSeedIds || []).forEach(function (id) { gone[id] = true; });
-    var added = 0;
+    var added = 0, filled = 0;
     CLASSICAL.works.forEach(function (w) {
-      if (known[w.id] || gone[w.id]) return;
+      if (gone[w.id]) return;
+      if (known[w.id]) {
+        // Already here from an earlier run, before the runtimes existed. Fill
+        // the gaps and leave anything already set alone — a runtime typed by
+        // hand outranks one measured from a playlist.
+        var have = byId(w.id);
+        if (!have) return;
+        var touched = false;
+        if (w.t && w.t.length && !(have.trackIds && have.trackIds.length)) {
+          have.trackIds = w.t.slice();
+          touched = true;
+        }
+        if (w.m > 0 && !have.minutes) { have.minutes = w.m; have.approx = false; touched = true; }
+        if (!have.form && w.form) { have.form = w.form; touched = true; }
+        if (touched) filled++;
+        return;
+      }
       state.library.push(seedAlbum({
         id: w.id, name: w.artist + ' - ' + w.title,
         artist: w.artist, title: w.title,
-        genre: w.genre, form: w.form, mode: 'classical', custom: 1
+        genre: w.genre, form: w.form, mode: 'classical', custom: 1,
+        minutes: w.m || null, trackIds: w.t || null
       }));
       added++;
     });
@@ -3987,7 +4016,10 @@
     render();
     renderClassicalStatus();
     renderFormMinutes();
-    toast(added ? 'Added ' + added + ' classical works.' : 'Nothing new to add.');
+    var said = [];
+    if (added) said.push('added ' + added);
+    if (filled) said.push('filled in ' + filled);
+    toast(said.length ? 'Classical library ' + said.join(', ') + '.' : 'Nothing new to add.');
   }
 
   function renderFormMinutes() {
