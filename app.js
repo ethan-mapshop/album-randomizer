@@ -21,17 +21,34 @@
   var deletingGenre = null; // genre row asking where its albums should go
   var genreFilter = '';   // sidebar genre selection, shared by Library and Played
 
+  // Two decks that never mix: the album rotation and the classical one. Only
+  // one is active at a time and deck() is the only thing that knows which, so
+  // everything downstream just asks for genres, rotation and session and stays
+  // ignorant of modes entirely.
+  function deck() { return state.decks[state.mode] || state.decks.main; }
+  function isClassical() { return state.mode === 'classical'; }
+
+  // Only classical records carry a mode, so the album library needed no
+  // migration when this arrived.
+  function inMode(a) { return (a.mode === 'classical') === isClassical(); }
+
   /* ───────────────────────────── state ───────────────────────────── */
 
   function defaults() {
     return {
       version: 1,
-      genres: SEED.genres.slice(),
+      mode: 'main',
+      decks: {
+        main: { genres: SEED.genres.slice(), rotation: 0, session: null },
+        classical: {
+          genres: (typeof CLASSICAL !== 'undefined' && CLASSICAL.periods)
+            ? CLASSICAL.periods.slice() : [],
+          rotation: 0, session: null
+        }
+      },
       library: [],
       deletedSeedIds: [],
       deletedGenres: [],
-      rotation: 0,
-      session: null,
       // The catalogue credential and the account link sit side by side: the
       // first only reads album data, the second is the only thing allowed to
       // write a playlist. Neither ever leaves this device.
@@ -111,7 +128,10 @@
     var dropped = st.deletedGenres || [];
     for (i = 0; i < SEED.genres.length; i++) {
       var g = SEED.genres[i];
-      if (st.genres.indexOf(g) === -1 && dropped.indexOf(g) === -1) st.genres.push(g);
+      // The seed only ever fills the album deck.
+      if (st.decks.main.genres.indexOf(g) === -1 && dropped.indexOf(g) === -1) {
+        st.decks.main.genres.push(g);
+      }
     }
     return added;
   }
@@ -124,13 +144,23 @@
       try {
         var saved = JSON.parse(raw);
         if (saved && saved.library) {
-          st.genres = saved.genres && saved.genres.length ? saved.genres : st.genres;
+          // Decks arrived after the first libraries did, so anything saved
+          // before them keeps its genres, rotation and open day as the main deck.
+          if (saved.decks && saved.decks.main) {
+            st.decks.main = saved.decks.main;
+            if (saved.decks.classical) st.decks.classical = saved.decks.classical;
+          } else if (saved.genres && saved.genres.length) {
+            st.decks.main = {
+              genres: saved.genres,
+              rotation: saved.rotation || 0,
+              session: saved.session || null
+            };
+          }
+          if (saved.mode === 'classical' || saved.mode === 'main') st.mode = saved.mode;
           st.library = saved.library;
           st.deletedSeedIds = saved.deletedSeedIds || [];
           st.deletedGenres = saved.deletedGenres || [];
           st.genreHues = saved.genreHues || SEED.genreHues || null;
-          st.rotation = saved.rotation || 0;
-          st.session = saved.session || null;
           if (saved.neon) {
             for (var nk in st.neon) {
               if (saved.neon[nk] !== undefined) st.neon[nk] = saved.neon[nk];
@@ -156,7 +186,11 @@
     // device that edits before its first pull lands, push them back up.
     if (!st.neon.conn) mergeSeed(st);
     backfill(st);
-    if (st.rotation >= st.genres.length) st.rotation = 0;
+    Object.keys(st.decks).forEach(function (k) {
+      var d = st.decks[k];
+      if (!d.genres) d.genres = [];
+      if (d.rotation >= d.genres.length) d.rotation = 0;
+    });
     state = st;      // ensureHues reads through state
     ensureHues();
     return st;
@@ -199,14 +233,18 @@
 
   // A genre keeps its colour for good. Deriving it from list position meant
   // reordering the rotation recoloured half the library.
+  // Both decks, not just the active one: a colour belongs to a genre for good,
+  // and switching decks should never repaint anything.
   function ensureHues() {
     if (!state.genreHues) state.genreHues = {};
     var used = Object.keys(state.genreHues).length;
-    state.genres.forEach(function (g) {
-      if (state.genreHues[g] === undefined) {
-        state.genreHues[g] = (15 + used * 37) % 360;
-        used++;
-      }
+    Object.keys(state.decks).forEach(function (k) {
+      (state.decks[k].genres || []).forEach(function (g) {
+        if (state.genreHues[g] === undefined) {
+          state.genreHues[g] = (15 + used * 37) % 360;
+          used++;
+        }
+      });
     });
   }
 
@@ -1121,7 +1159,7 @@
   // reads as "these are now the contents" — so clearing and filling happen in
   // one call rather than leaving an empty list behind if a later one fails.
   async function writePlaylist(onStep) {
-    var s = state.session;
+    var s = deck().session;
     var picked = s ? s.slots.filter(function (x) { return x.added && x.albumId; }) : [];
     if (!picked.length) throw new Error('Nothing is marked as added yet.');
 
@@ -1287,6 +1325,10 @@
     if (a.fav) o.fav = 1;
     if (a.played) { o.played = 1; if (a.playedAt) o.playedAt = a.playedAt; }
     if (a.custom) o.custom = 1;
+    if (a.mode === 'classical') {
+      o.mode = 'classical';
+      if (a.form) o.form = a.form;
+    }
     if (a.approx) o.approx = 1;
     if (a.match && a.match !== 'auto') o.match = a.match;
     if (a.spotifyId) {
@@ -1309,12 +1351,16 @@
       v: 1,
       updatedAt: new Date().toISOString(),
       device: state.neon.device || guessDeviceName(),
-      genres: state.genres,
+      // The flat trio mirrors the album deck so a library written before decks
+      // existed still reads back, and so does one read by anything that predates
+      // them. decks is what actually gets adopted.
+      genres: state.decks.main.genres,
+      rotation: state.decks.main.rotation,
+      session: state.decks.main.session,
+      decks: state.decks,
       genreHues: state.genreHues,
       deletedSeedIds: state.deletedSeedIds,
       deletedGenres: state.deletedGenres,
-      rotation: state.rotation,
-      session: state.session,
       settings: settings,
       albums: state.library.map(packAlbum)
     };
@@ -1323,12 +1369,20 @@
   // Replaces local state wholesale. The remote file is the record; anything a
   // device holds that has not been pushed is by definition older.
   function adopt(remote) {
-    state.genres = remote.genres && remote.genres.length ? remote.genres : state.genres;
+    if (remote.decks && remote.decks.main) {
+      state.decks.main = remote.decks.main;
+      if (remote.decks.classical) state.decks.classical = remote.decks.classical;
+    } else if (remote.genres && remote.genres.length) {
+      // Written before decks existed, so all of it is the album deck.
+      state.decks.main = {
+        genres: remote.genres,
+        rotation: remote.rotation || 0,
+        session: remote.session || null
+      };
+    }
     state.genreHues = remote.genreHues || state.genreHues;
     state.deletedSeedIds = remote.deletedSeedIds || [];
     state.deletedGenres = remote.deletedGenres || [];
-    state.rotation = remote.rotation || 0;
-    state.session = remote.session || null;
     if (remote.settings) {
       SYNC_SETTINGS.forEach(function (k) {
         if (remote.settings[k] !== undefined) state.settings[k] = remote.settings[k];
@@ -1339,7 +1393,11 @@
     (remote.albums || []).forEach(function (s, i) {
       if (s.candidates) state.library[i].candidates = s.candidates;
     });
-    if (state.rotation >= state.genres.length) state.rotation = 0;
+    Object.keys(state.decks).forEach(function (k) {
+      var d = state.decks[k];
+      if (!d.genres) d.genres = [];
+      if (d.rotation >= d.genres.length) d.rotation = 0;
+    });
     ensureHues();
   }
 
@@ -1373,7 +1431,7 @@
    */
 
   var NEON_META = ['genres', 'genreHues', 'deletedSeedIds', 'deletedGenres',
-                   'rotation', 'session', 'settings'];
+                   'rotation', 'session', 'decks', 'settings'];
 
   function neonConfigured() {
     return !!(state.neon && state.neon.conn);
@@ -1703,7 +1761,7 @@
         .then(function (res) {
           var r = neonRows(res)[0] || {};
           var already = Number(r.albums || 0);
-          var msg = 'Upload ' + state.library.length + ' albums, ' + state.genres.length +
+          var msg = 'Upload ' + state.library.length + ' albums, ' + deck().genres.length +
             ' genres and the open day to Neon?';
           if (already) {
             msg = 'Neon already holds ' + already + ' albums (version ' + r.version + ').\n\n' +
@@ -1755,9 +1813,10 @@
     var out = [];
     for (var i = 0; i < state.library.length; i++) {
       var a = state.library[i];
+      if (!inMode(a)) continue;
       if (a.played && genreIndex !== BONUS) continue;
       if (exclude[a.id]) continue;
-      if (genreIndex === BONUS ? !a.fav : a.genre !== state.genres[genreIndex]) continue;
+      if (genreIndex === BONUS ? !a.fav : a.genre !== deck().genres[genreIndex]) continue;
       out.push(a);
     }
     return out;
@@ -1777,7 +1836,7 @@
       if (session.slots[i].genreIndex !== BONUS) last = session.slots[i].genreIndex;
     }
     if (last === null) return session.startRotation;
-    return (last + 1) % state.genres.length;
+    return (last + 1) % deck().genres.length;
   }
 
   var slotSeq = 0;
@@ -1903,7 +1962,7 @@
       session.slots.push(makeSlot(session, BONUS));
       return true;
     }
-    var n = state.genres.length;
+    var n = deck().genres.length;
     var idx = nextRotationIndex(session);
     for (var tries = 0; tries < n; tries++) {
       if (poolFor(idx, used).length) {
@@ -1952,13 +2011,13 @@
   }
 
   function newSession() {
-    var session = { date: today(), startRotation: state.rotation, slots: [] };
+    var session = { date: today(), startRotation: deck().rotation, slots: [] };
     ensureCoverage(session);
     return session;
   }
 
   function finishDay() {
-    var s = state.session;
+    var s = deck().session;
     if (!s) return;
     var added = s.slots.filter(function (x) { return x.added && x.albumId; });
     if (!added.length) { toast('Nothing marked as added yet.'); return; }
@@ -1975,15 +2034,15 @@
       if (a) { a.played = true; a.playedAt = finishedOn; }
       lastGenre = slot.genreIndex;
     });
-    if (lastGenre !== null) state.rotation = (lastGenre + 1) % state.genres.length;
+    if (lastGenre !== null) deck().rotation = (lastGenre + 1) % deck().genres.length;
 
-    state.session = null;
+    deck().session = null;
     save();
     render();
     toast('Logged ' + added.length + ' album' + (added.length === 1 ? '' : 's') +
       (keptFav ? ' (' + keptFav + ' favourite' + (keptFav === 1 ? '' : 's') +
         ' stay in the pool)' : '') +
-      ' · next day starts with ' + state.genres[state.rotation] + '.');
+      ' · next day starts with ' + deck().genres[deck().rotation] + '.');
   }
 
   /* ───────────────────────────── today ───────────────────────────── */
@@ -1991,8 +2050,8 @@
   function renderToday() {
     // A freshly drawn day is persisted straight away, so reopening the page
     // shows the same picks rather than rerolling them.
-    if (!state.session) { state.session = newSession(); save(); }
-    var s = state.session;
+    if (!deck().session) { deck().session = newSession(); save(); }
+    var s = deck().session;
 
     $('#day-date').textContent = longDate(s.date) + (s.date !== today() ? ' · still open' : '');
     $('#day-title').textContent = 'Today’s playlist';
@@ -2000,14 +2059,14 @@
     // A genre with nothing to draw is either worked through or not filled in
     // yet — quite different situations, so say which.
     var playedOut = [], stillEmpty = 0;
-    for (var i = 0; i < state.genres.length; i++) {
+    for (var i = 0; i < deck().genres.length; i++) {
       if (poolFor(i, {}).length) continue;
-      var name = state.genres[i];
+      var name = deck().genres[i];
       var owned = state.library.some(function (a) { return a.genre === name; });
       if (owned) playedOut.push(name); else stillEmpty++;
     }
 
-    var sub = 'Rotation started at <b>' + esc(state.genres[s.startRotation]) + '</b>.';
+    var sub = 'Rotation started at <b>' + esc(deck().genres[s.startRotation]) + '</b>.';
     var notes = [];
     if (playedOut.length) {
       notes.push(esc(playedOut.join(', ')) +
@@ -2050,14 +2109,14 @@
 
   function anyPoolLeft(session) {
     var used = usedIds(session);
-    for (var i = 0; i < state.genres.length; i++) {
+    for (var i = 0; i < deck().genres.length; i++) {
       if (poolFor(i, used).length) return true;
     }
     return false;
   }
 
   function renderMeter() {
-    var s = state.session;
+    var s = deck().session;
     var target = state.settings.targetMinutes;
     var added = addedMinutes(s), planned = plannedMinutes(s);
     var count = s.slots.filter(function (x) { return x.added; }).length;
@@ -2073,7 +2132,7 @@
   function renderSlot(slot, num) {
     var album = slot.albumId ? byId(slot.albumId) : null;
     var bonus = slot.genreIndex === BONUS;
-    var genre = bonus ? 'Favorites' : state.genres[slot.genreIndex];
+    var genre = bonus ? 'Favorites' : deck().genres[slot.genreIndex];
 
     var node = el('article', 'slot' + (slot.added ? ' is-added' : '') +
       (album ? '' : ' is-empty') + (bonus ? ' is-bonus' : ''));
@@ -2185,7 +2244,7 @@
     var card = e.target.closest('.slot');
     if (!card) return null;
     var key = card.dataset.key;
-    var slots = state.session.slots;
+    var slots = deck().session.slots;
     for (var i = 0; i < slots.length; i++) if (slots[i].key === key) return slots[i];
     return null;
   }
@@ -2205,15 +2264,15 @@
         save();
         refreshSlot(slot);
         renderMeter();
-        var live = state.session.slots.some(function (x) { return x.added; });
+        var live = deck().session.slots.some(function (x) { return x.added; });
         $('#finish-day').disabled = !live;
         $('#push-playlist').disabled = !live || playlistBusy || !spLinked();
       } else if (act === 'reroll') {
         // usedIds already excludes this slot's own album, so a reroll never
         // hands back the same record. The slot key goes too, so the album being
         // replaced is not held against whatever replaces it.
-        var picks = pickVaried(poolFor(slot.genreIndex, usedIds(state.session)),
-          1 + ALT_COUNT, state.session, slot.key);
+        var picks = pickVaried(poolFor(slot.genreIndex, usedIds(deck().session)),
+          1 + ALT_COUNT, deck().session, slot.key);
         if (!picks.length) { toast('No other unplayed albums in that genre.'); return; }
         slot.albumId = picks[0].id;
         slot.alternates = picks.slice(1).map(function (a) { return a.id; });
@@ -2234,8 +2293,8 @@
         var a = byId(slot.albumId);
         if (a) copyText(a.name, 'Copied “' + a.name + '”');
       } else if (act === 'drop') {
-        var idx = state.session.slots.indexOf(slot);
-        state.session.slots.splice(idx, 1);
+        var idx = deck().session.slots.indexOf(slot);
+        deck().session.slots.splice(idx, 1);
         save();
         renderToday();
       }
@@ -2245,7 +2304,7 @@
       if (!e.target.classList || !e.target.classList.contains('alts')) return;
       var card = e.target.closest('.slot');
       if (!card) return;
-      state.session.slots.forEach(function (s) {
+      deck().session.slots.forEach(function (s) {
         if (s.key === card.dataset.key) s.altsOpen = e.target.open;
       });
     }, true);
@@ -2300,15 +2359,15 @@
       // Remember it on the album itself, so it is only ever typed once.
       var album = byId(slot.albumId);
       if (album) album.minutes = slot.minutes;
-      var count = state.session.slots.length;
-      ensureCoverage(state.session);
+      var count = deck().session.slots.length;
+      ensureCoverage(deck().session);
       save();
-      if (state.session.slots.length !== count) renderToday();
+      if (deck().session.slots.length !== count) renderToday();
       else renderMeter();
     });
 
     $('#add-slot').addEventListener('click', function () {
-      if (!appendRotationSlot(state.session)) { toast('Nothing left to draw.'); return; }
+      if (!appendRotationSlot(deck().session)) { toast('Nothing left to draw.'); return; }
       save();
       renderToday();
     });
@@ -2316,23 +2375,23 @@
     $('#finish-day').addEventListener('click', finishDay);
 
     $('#reset-day').addEventListener('click', function () {
-      var added = state.session.slots.filter(function (x) { return x.added; }).length;
+      var added = deck().session.slots.filter(function (x) { return x.added; }).length;
       if (added && !confirm('Discard today’s ' + added + ' picked album' +
         (added === 1 ? '' : 's') + ' and draw a fresh set?')) return;
-      state.session = null;
+      deck().session = null;
       save();
       renderToday();
     });
 
     $('#copy-day').addEventListener('click', function () {
-      var s = state.session;
+      var s = deck().session;
       var picked = s.slots.filter(function (x) { return x.added && x.albumId; });
       var list = picked.length ? picked : s.slots.filter(function (x) { return x.albumId; });
       if (!list.length) { toast('Nothing to copy yet.'); return; }
       var lines = ['Album Randomizer — ' + shortDate(s.date), ''];
       list.forEach(function (slot, i) {
         var a = byId(slot.albumId);
-        var g = slot.genreIndex === BONUS ? 'Favorites' : state.genres[slot.genreIndex];
+        var g = slot.genreIndex === BONUS ? 'Favorites' : deck().genres[slot.genreIndex];
         lines.push((i + 1) + '. ' + a.name + '  (' + g + ')');
       });
       var mins = list.reduce(function (t, x) { return t + (x.minutes || 0); }, 0);
@@ -2357,7 +2416,7 @@
       : lib.filter(function (a) { return !a.played; }).length;
     box.appendChild(genreItem('', 'All genres', total, playedView ? null : lib.length));
 
-    state.genres.forEach(function (g) {
+    deck().genres.forEach(function (g) {
       var all = lib.filter(function (a) { return a.genre === g; });
       var n = all.filter(function (a) { return playedView ? a.played : !a.played; }).length;
       box.appendChild(genreItem(g, g, n, playedView ? null : all.length));
@@ -2393,10 +2452,10 @@
     // its place because the sidebar can be collapsed away entirely.
     var gsel = $('#lib-genre');
     gsel.innerHTML = '<option value="">All genres</option>' +
-      state.genres.map(function (g) {
+      deck().genres.map(function (g) {
         return '<option value="' + esc(g) + '">' + esc(g) + '</option>';
       }).join('');
-    gsel.value = state.genres.indexOf(genreFilter) > -1 ? genreFilter : '';
+    gsel.value = deck().genres.indexOf(genreFilter) > -1 ? genreFilter : '';
 
     var dsel = $('#lib-decade');
     var wantDecade = dsel.value;
@@ -2413,10 +2472,10 @@
     // album added, which is what carries the choice across a reload.
     var wantAdd = asel.value || state.settings.lastAddGenre;
     asel.innerHTML = '';
-    state.genres.forEach(function (g) {
+    deck().genres.forEach(function (g) {
       asel.insertAdjacentHTML('beforeend', '<option value="' + esc(g) + '">' + esc(g) + '</option>');
     });
-    asel.value = state.genres.indexOf(wantAdd) > -1 ? wantAdd : state.genres[0];
+    asel.value = deck().genres.indexOf(wantAdd) > -1 ? wantAdd : deck().genres[0];
 
     renderRows();
   }
@@ -2636,7 +2695,7 @@
       '<form class="row-edit" data-act="save">' +
         '<input type="text" class="edit-artist" value="' + esc(a.artist || '') + '" placeholder="Artist">' +
         '<input type="text" class="edit-title" value="' + esc(a.title || a.name) + '" placeholder="Album" required>' +
-        '<select class="edit-genre">' + state.genres.map(function (g) {
+        '<select class="edit-genre">' + deck().genres.map(function (g) {
           return '<option value="' + esc(g) + '"' + (g === a.genre ? ' selected' : '') + '>' + esc(g) + '</option>';
         }).join('') + '</select>' +
         '<label class="numbox"><input type="number" class="edit-year" min="1900" max="2100" step="1"' +
@@ -2732,7 +2791,7 @@
     bar.innerHTML =
       '<span class="bulk-count">' + (n ? n + ' selected' : 'none selected') + '</span>' +
       '<select id="bulk-genre" title="Genre to move them to"' + off + '>' +
-        state.genres.map(function (g) {
+        deck().genres.map(function (g) {
           return '<option value="' + esc(g) + '">' + esc(g) + '</option>';
         }).join('') + '</select>' +
       '<button class="btn" type="button" data-bulk="move"' + off + '>Move</button>' +
@@ -2876,8 +2935,8 @@
       albums.forEach(function (a) {
         state.library.splice(state.library.indexOf(a), 1);
         state.deletedSeedIds.push(a.id);   // seed now holds every album, so always tombstone
-        if (state.session) {
-          state.session.slots = state.session.slots.filter(function (sl) { return sl.albumId !== a.id; });
+        if (deck().session) {
+          deck().session.slots = deck().session.slots.filter(function (sl) { return sl.albumId !== a.id; });
         }
       });
       selected = {}; lastPicked = null;
@@ -3049,8 +3108,8 @@
         if (!confirm('Delete “' + a.name + '” from the library?')) return;
         state.library.splice(state.library.indexOf(a), 1);
         state.deletedSeedIds.push(a.id);   // seed now holds every album, so always tombstone
-        if (state.session) {
-          state.session.slots = state.session.slots.filter(function (s) { return s.albumId !== a.id; });
+        if (deck().session) {
+          deck().session.slots = deck().session.slots.filter(function (s) { return s.albumId !== a.id; });
         }
       }
       save();
@@ -3408,8 +3467,8 @@
       if (known[key] || seen[key]) { plan.dupe.push(a); return; }
       seen[key] = true;
       var genre = a.genre;
-      if (!genre || state.genres.indexOf(genre) === -1) {
-        if (genre && state.genres.indexOf(genre) === -1) plan.newGenre = true;
+      if (!genre || deck().genres.indexOf(genre) === -1) {
+        if (genre && deck().genres.indexOf(genre) === -1) plan.newGenre = true;
         else plan.unknownGenre++;
       }
       plan.add.push({
@@ -3424,8 +3483,8 @@
   function commitImport(plan, keepNewGenres) {
     var added = 0;
     plan.add.forEach(function (a) {
-      if (keepNewGenres && a.genre && state.genres.indexOf(a.genre) === -1) state.genres.push(a.genre);
-      var genre = state.genres.indexOf(a.genre) > -1 ? a.genre : state.genres[0];
+      if (keepNewGenres && a.genre && deck().genres.indexOf(a.genre) === -1) deck().genres.push(a.genre);
+      var genre = deck().genres.indexOf(a.genre) > -1 ? a.genre : deck().genres[0];
       var id = 'custom-' + slugOf(a.name);
       if (byId(id)) return;
       state.library.push({
@@ -3463,8 +3522,8 @@
     renderPlaylistStatus();
 
     var sel = $('#set-rotation');
-    sel.innerHTML = state.genres.map(function (g, i) {
-      return '<option value="' + i + '"' + (i === state.rotation ? ' selected' : '') + '>' + esc(g) + '</option>';
+    sel.innerHTML = deck().genres.map(function (g, i) {
+      return '<option value="' + i + '"' + (i === deck().rotation ? ' selected' : '') + '>' + esc(g) + '</option>';
     }).join('');
 
     renderGenreOrder();
@@ -3500,43 +3559,43 @@
   function renderGenreOrder() {
     var counts = {};
     state.library.forEach(function (a) { counts[a.genre] = (counts[a.genre] || 0) + 1; });
-    $('#genre-order').innerHTML = state.genres.map(function (g, i) {
+    $('#genre-order').innerHTML = deck().genres.map(function (g, i) {
       var n = counts[g] || 0;
       if (g === deletingGenre) return genreDeleteRow(g, n);
       return '<li draggable="true" data-genre="' + esc(g) + '"' +
-        (i === state.rotation ? ' class="cur"' : '') + '>' +
+        (i === deck().rotation ? ' class="cur"' : '') + '>' +
         '<span class="grip" aria-hidden="true">⠿</span>' +
         '<span class="gname" style="--h:' + hue(g) + '">' + esc(g) + '</span>' +
         '<span class="gcount">' + (n ? n + ' album' + (n === 1 ? '' : 's') : 'empty') + '</span>' +
-        (i === state.rotation ? '<span class="gnext">next up</span>' : '') +
+        (i === deck().rotation ? '<span class="gnext">next up</span>' : '') +
         '<span class="gmove">' +
           '<button type="button" data-act="g-up" title="Move up"' + (i ? '' : ' disabled') + '>↑</button>' +
           '<button type="button" data-act="g-down" title="Move down"' +
-            (i === state.genres.length - 1 ? ' disabled' : '') + '>↓</button>' +
+            (i === deck().genres.length - 1 ? ' disabled' : '') + '>↓</button>' +
           '<button type="button" data-act="g-del" class="del" title="Delete genre"' +
-            (state.genres.length < 2 ? ' disabled' : '') + '>✕</button>' +
+            (deck().genres.length < 2 ? ' disabled' : '') + '>✕</button>' +
         '</span></li>';
     }).join('');
   }
 
   // The rotation pointer and every slot in an open day are stored as indexes
-  // into state.genres, so a reorder has to re-anchor them by name.
+  // into deck().genres, so a reorder has to re-anchor them by name.
   function applyGenreOrder(order) {
-    var nameAt = function (i) { return state.genres[i]; };
-    var rotationName = nameAt(state.rotation);
-    var session = state.session;
+    var nameAt = function (i) { return deck().genres[i]; };
+    var rotationName = nameAt(deck().rotation);
+    var session = deck().session;
     var startName = session ? nameAt(session.startRotation) : null;
     var slotNames = session ? session.slots.map(function (sl) {
       return sl.genreIndex === BONUS ? null : nameAt(sl.genreIndex);
     }) : [];
 
-    state.genres = order.slice();
+    deck().genres = order.slice();
 
     var idx = function (name) {
-      var i = state.genres.indexOf(name);
+      var i = deck().genres.indexOf(name);
       return i > -1 ? i : 0;
     };
-    state.rotation = idx(rotationName);
+    deck().rotation = idx(rotationName);
     if (session) {
       session.startRotation = idx(startName);
       session.slots.forEach(function (sl, n) {
@@ -3549,7 +3608,7 @@
   }
 
   function moveGenre(name, delta) {
-    var order = state.genres.slice();
+    var order = deck().genres.slice();
     var from = order.indexOf(name);
     var to = from + delta;
     if (from < 0 || to < 0 || to >= order.length) return;
@@ -3560,7 +3619,7 @@
   }
 
   function genreDeleteRow(name, count) {
-    var others = state.genres.filter(function (g) { return g !== name; });
+    var others = deck().genres.filter(function (g) { return g !== name; });
     var prompt = count
       ? 'Move its ' + count + ' album' + (count === 1 ? '' : 's') + ' to'
       : 'Delete this empty genre?';
@@ -3582,10 +3641,10 @@
   // a genre that no longer exists would quietly stop being drawn — so albums are
   // moved first and everything is re-anchored by name afterwards.
   function deleteGenre(name, moveTo) {
-    if (state.genres.length < 2) return;
-    var nameAt = function (i) { return state.genres[i]; };
-    var rotationName = nameAt(state.rotation);
-    var session = state.session;
+    if (deck().genres.length < 2) return;
+    var nameAt = function (i) { return deck().genres[i]; };
+    var rotationName = nameAt(deck().rotation);
+    var session = deck().session;
     var startName = session ? nameAt(session.startRotation) : null;
     var slotNames = session ? session.slots.map(function (sl) {
       return sl.genreIndex === BONUS ? null : nameAt(sl.genreIndex);
@@ -3598,17 +3657,17 @@
       moved++;
     });
 
-    state.genres = state.genres.filter(function (g) { return g !== name; });
+    deck().genres = deck().genres.filter(function (g) { return g !== name; });
     // Without this the seed would hand the genre straight back on next load.
     if (!state.deletedGenres) state.deletedGenres = [];
     if (state.deletedGenres.indexOf(name) === -1) state.deletedGenres.push(name);
 
     var idx = function (n, fallback) {
-      var i = state.genres.indexOf(n);
+      var i = deck().genres.indexOf(n);
       return i > -1 ? i : fallback;
     };
     var landing = idx(moveTo, 0);
-    state.rotation = idx(rotationName, landing);
+    deck().rotation = idx(rotationName, landing);
     if (session) {
       session.startRotation = idx(startName, landing);
       session.slots.forEach(function (sl, n) {
@@ -3645,7 +3704,7 @@
       }
       if (act === 'g-del-yes') {
         var picker = $('#g-move-to');
-        var moveTo = picker ? picker.value : state.genres.filter(function (g) { return g !== name; })[0];
+        var moveTo = picker ? picker.value : deck().genres.filter(function (g) { return g !== name; })[0];
         var moved = deleteGenre(name, moveTo);
         deletingGenre = null;
         renderSettings();
@@ -3684,7 +3743,7 @@
       dragging.classList.remove('dragging');
       dragging = null;
       var order = [].map.call(list.querySelectorAll('li'), function (li) { return li.dataset.genre; });
-      if (order.join('|') === state.genres.join('|')) { renderGenreOrder(); return; }
+      if (order.join('|') === deck().genres.join('|')) { renderGenreOrder(); return; }
       applyGenreOrder(order);
       renderSettings();
       renderToday();
@@ -3805,7 +3864,7 @@
 
     var sheet = imported.sheets[imported.pick];
     var found = analyseSheet(sheet);
-    var plan = planImport(found.albums, state.genres[0]);
+    var plan = planImport(found.albums, deck().genres[0]);
     imported.plan = plan;
 
     var sheetPicker = imported.sheets.length > 1
@@ -3823,7 +3882,7 @@
     if (plan.dupe.length) notes.push(plan.dupe.length + ' already in your library');
     if (plan.newGenre) notes.push('<span class="imp-warn">new genres will be added</span>');
     if (plan.unknownGenre) notes.push('<span class="imp-warn">' + plan.unknownGenre +
-      ' with no genre &rarr; ' + esc(state.genres[0]) + '</span>');
+      ' with no genre &rarr; ' + esc(deck().genres[0]) + '</span>');
 
     var rows = plan.add.slice(0, 40).map(function (a) {
       return '<div class="imp-row"><span class="imp-name">' + esc(a.name) + '</span>' +
@@ -3895,9 +3954,9 @@
       var h = Math.max(0.5, Math.min(24, +this.value || 8));
       this.value = h;
       state.settings.targetMinutes = Math.round(h * 60);
-      if (state.session) {
-        trimCoverage(state.session);
-        ensureCoverage(state.session);
+      if (deck().session) {
+        trimCoverage(deck().session);
+        ensureCoverage(deck().session);
       }
       save();
       renderToday();
@@ -3930,10 +3989,10 @@
       // The cadence fixes which positions are favourites across the whole day,
       // so it cannot be patched into a run that is already drawn. Redraw when
       // nothing has been picked yet, and otherwise leave today alone.
-      var s = state.session;
+      var s = deck().session;
       var picked = s ? s.slots.filter(function (x) { return x.added; }).length : 0;
       if (s && !picked) {
-        state.session = null;
+        deck().session = null;
       } else if (picked) {
         toast('Applies from tomorrow — today already has ' + picked +
           ' album' + (picked === 1 ? '' : 's') + ' picked.');
@@ -3943,22 +4002,22 @@
     });
 
     $('#set-rotation').addEventListener('change', function () {
-      state.rotation = +this.value;
-      if (state.session && !state.session.slots.some(function (x) { return x.added; })) {
-        state.session = null; // redraw the untouched day from the new start point
+      deck().rotation = +this.value;
+      if (deck().session && !deck().session.slots.some(function (x) { return x.added; })) {
+        deck().session = null; // redraw the untouched day from the new start point
       }
       save();
       renderSettings();
       renderToday();
-      toast('Next day starts with ' + state.genres[state.rotation] + '.');
+      toast('Next day starts with ' + deck().genres[deck().rotation] + '.');
     });
 
     $('#genre-form').addEventListener('submit', function (e) {
       e.preventDefault();
       var name = $('#new-genre').value.trim();
       if (!name) return;
-      if (state.genres.indexOf(name) > -1) { toast('That genre already exists.'); return; }
-      state.genres.push(name);
+      if (deck().genres.indexOf(name) > -1) { toast('That genre already exists.'); return; }
+      deck().genres.push(name);
       if (state.deletedGenres) {
         state.deletedGenres = state.deletedGenres.filter(function (g) { return g !== name; });
       }
@@ -3990,7 +4049,7 @@
           var keepSpotify = state.spotify;
           state = data;
           if (!state.settings) state.settings = defaults().settings;
-          if (!state.genres || !state.genres.length) state.genres = SEED.genres.slice();
+          if (!deck().genres || !deck().genres.length) deck().genres = SEED.genres.slice();
           if (!state.deletedSeedIds) state.deletedSeedIds = [];
           if (!state.spotify || !state.spotify.clientId) state.spotify = keepSpotify;
           mergeSeed(state);
