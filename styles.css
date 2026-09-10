@@ -992,3 +992,9 @@ body:not([data-deck="classical"]) .form-pick { display: none; }
 @media (max-width: 620px) {
   #lib-rows .row-form { width: auto; }
 }
+
+/* A classical work has no RateYourMusic score, and its tracks came from a
+   playlist rather than being trimmed by hand off a deluxe edition, so neither
+   box has a job on the card. Length stays: it is the one you might correct. */
+body[data-deck="classical"] .slot-nums .rym,
+body[data-deck="classical"] .slot-nums .trk { display: none; }
