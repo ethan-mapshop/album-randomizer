@@ -229,47 +229,6 @@
     </div>
 
     <div class="panel">
-      <h3>Sync</h3>
-      <p class="dim">Keeps one library across every device. The app pulls when it opens and
-        after it regains focus, and saves back a few seconds after you stop editing.
-        Your Spotify credentials and this device&rsquo;s theme are deliberately left out of the
-        file, so nothing secret ever reaches the repository.</p>
-      <label class="field">
-        <span>Repository</span>
-        <span class="field-input">
-          <input type="text" id="sync-owner" placeholder="owner" spellcheck="false" autocomplete="off">
-          <span class="dim">/</span>
-          <input type="text" id="sync-repo" placeholder="repo" spellcheck="false" autocomplete="off">
-        </span>
-      </label>
-      <label class="field">
-        <span>File and branch</span>
-        <span class="field-input">
-          <input type="text" id="sync-path" placeholder="library.json" spellcheck="false" autocomplete="off">
-          <span class="dim">on</span>
-          <input type="text" id="sync-branch" placeholder="main" spellcheck="false" autocomplete="off">
-        </span>
-      </label>
-      <label class="field">
-        <span>Access token</span>
-        <span class="field-input"><input type="password" id="sync-token" spellcheck="false" autocomplete="off"></span>
-        <small>A fine-grained personal access token with <b>Contents: read and write</b> on that
-          repository and nothing else. Stored on this device only.</small>
-      </label>
-      <label class="field">
-        <span>This device is called</span>
-        <span class="field-input"><input type="text" id="sync-device" spellcheck="false" autocomplete="off"></span>
-        <small>Used in the commit message, so the history says where a change came from.</small>
-      </label>
-      <div class="btn-row">
-        <button class="btn" id="sync-save">Save &amp; connect</button>
-        <button class="btn" id="sync-pull">Pull now</button>
-        <button class="btn" id="sync-push">Push now</button>
-        <button class="btn btn-quiet" id="sync-forget">Forget token</button>
-      </div>
-      <p class="sync-status" id="sync-status"></p>
-    </div>
-    <div class="panel">
       <h3>Album lengths</h3>
       <p class="dim">Reads real running times from Spotify, so the target means something and each
         card can link straight to the album instead of a search.
