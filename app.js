@@ -1196,7 +1196,11 @@
     for (var i = 0; i < picked.length; i++) {
       var a = byId(picked[i].albumId);
       if (!a) continue;
-      if (!a.spotifyId) { skipped.push(a.name + ' (not linked)'); continue; }
+      // What matters is whether the tracks can be got at, not whether an album
+      // is linked. A classical work never has one: it arrived carrying its own
+      // track ids, which is the thing the write actually needs.
+      var haveTracks = a.trackIds && a.trackIds.length;
+      if (!haveTracks && !a.spotifyId) { skipped.push(a.name + ' (not linked)'); continue; }
       onStep('Reading ' + (i + 1) + ' of ' + picked.length + ' — ' + a.name);
       try {
         var got = await albumUris(a);
@@ -1295,7 +1299,8 @@
       writePlaylist(function (msg) { note.textContent = msg; }).then(function (res) {
         playlistBusy = false;
         btn.disabled = false;
-        var bits = [res.tracks + ' tracks from ' + res.albums + ' album' + (res.albums === 1 ? '' : 's')];
+        var noun = isClassical() ? ' work' : ' album';
+        var bits = [res.tracks + ' tracks from ' + res.albums + noun + (res.albums === 1 ? '' : 's')];
         if (res.cached) bits.push(res.cached + ' read from cache, no calls used');
         if (res.trimmed) bits.push(res.trimmed + ' trimmed to the library count');
         if (res.skipped.length) bits.push(res.skipped.length + ' skipped: ' + res.skipped.join(', '));
