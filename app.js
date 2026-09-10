@@ -45,6 +45,11 @@
         owner: '', repo: '', branch: 'main', path: 'library.json',
         token: '', sha: null, remoteAt: null, lastPush: 0, device: ''
       },
+      // Per device, like the Spotify credentials: the connection string is this
+      // browser’s key to the database and never travels with the library.
+      neon: {
+        conn: '', version: 0, hashes: null, lastPull: null, lastPush: 0, device: ''
+      },
       genreHues: SEED.genreHues ? JSON.parse(JSON.stringify(SEED.genreHues)) : null,
       settings: {
         targetMinutes: 480,
@@ -133,6 +138,11 @@
           if (saved.sync) {
             for (var yk in st.sync) {
               if (saved.sync[yk] !== undefined) st.sync[yk] = saved.sync[yk];
+            }
+          }
+          if (saved.neon) {
+            for (var nk in st.neon) {
+              if (saved.neon[nk] !== undefined) st.neon[nk] = saved.neon[nk];
             }
           }
           if (saved.spotify) {
@@ -1510,6 +1520,386 @@
     syncState = 'pending';
     renderSyncStatus();
     syncTimer = setTimeout(function () { syncPush(false); }, SYNC_DEBOUNCE);
+  }
+
+  /* ───────────────────────────── neon ─────────────────────────────
+   * The library lives in Postgres, one row per album, reached straight from the
+   * browser over Neon's SQL-over-HTTP endpoint. No driver, no proxy, no build
+   * step — it is a POST with the connection string in a header.
+   *
+   * Two things about that endpoint are worth knowing before touching this:
+   *
+   *   1. Do NOT set Content-Type. Neon's access-control-allow-headers lists its
+   *      own Neon-* headers and Authorization, and nothing else. Setting
+   *      application/json makes the browser preflight a header Neon will not
+   *      allow, and the failure surfaces as a bare "Failed to fetch" that looks
+   *      exactly like being offline. Letting fetch default to text/plain keeps
+   *      the request CORS-simple.
+   *   2. One request runs one statement. Everything a push does therefore has
+   *      to fit in a single statement, which is why the push is one large CTE
+   *      rather than a sequence of calls: a sequence could half-apply.
+   */
+
+  var NEON_META = ['genres', 'genreHues', 'deletedSeedIds', 'deletedGenres',
+                   'rotation', 'session', 'settings'];
+
+  function neonConfigured() {
+    return !!(state.neon && state.neon.conn);
+  }
+
+  // The endpoint host is the part of the connection string between the
+  // credentials and the database name.
+  function neonHost(conn) {
+    var m = String(conn || '').match(/@([^\/\?]+)/);
+    return m ? m[1].split(':')[0] : '';
+  }
+
+  // Values come back as text because of Neon-Raw-Text-Output, so a jsonb column
+  // arrives as its JSON source. Tolerant of the proxy deciding to parse for us.
+  function asJson(v) {
+    if (v == null) return null;
+    if (typeof v !== 'string') return v;
+    try { return JSON.parse(v); } catch (e) { return v; }
+  }
+
+  function neonSql(query, params) {
+    var conn = state.neon.conn;
+    var host = neonHost(conn);
+    if (!host) return Promise.reject(new Error('That connection string has no host in it.'));
+
+    return fetch('https://' + host + '/sql', {
+      method: 'POST',
+      headers: {
+        'Neon-Connection-String': conn,
+        'Neon-Raw-Text-Output': 'true'
+      },
+      body: JSON.stringify({ query: query, params: params || [] })
+    }).then(function (r) {
+      return r.text().then(function (text) {
+        var body = null;
+        try { body = JSON.parse(text); } catch (e) { /* not json */ }
+        if (!r.ok) {
+          var msg = (body && (body.message || body.error)) || text.slice(0, 200) ||
+            ('Neon returned ' + r.status);
+          var err = new Error(msg);
+          err.status = r.status;
+          err.code = body && body.code;
+          throw err;
+        }
+        return body || {};
+      });
+    }, function (netErr) {
+      // The CORS trap above lands here, indistinguishable from being offline.
+      throw new Error('Could not reach Neon: ' + (netErr.message || netErr));
+    });
+  }
+
+  function neonRows(res) {
+    var rows = (res && res.rows) || [];
+    return rows;
+  }
+
+  /* ---- what has changed since the last push ---- */
+
+  // Two different 32-bit hashes over the packed record, plus its length. A miss
+  // would mean an edit never leaving this device, so the point is to make a
+  // collision not worth thinking about rather than to be fast.
+  function docHash(text) {
+    var a = 5381, b = 0;
+    for (var i = 0; i < text.length; i++) {
+      var c = text.charCodeAt(i);
+      a = ((a << 5) + a + c) | 0;
+      b = (c + (b << 6) + (b << 16) - b) | 0;
+    }
+    return text.length + ':' + (a >>> 0).toString(36) + (b >>> 0).toString(36);
+  }
+
+  function neonDiff() {
+    var known = (state.neon && state.neon.hashes) || {};
+    var upserts = [], hashes = {}, seen = {};
+    state.library.forEach(function (a) {
+      var packed = packAlbum(a);
+      var text = JSON.stringify(packed);
+      var h = docHash(text);
+      hashes[a.id] = h;
+      seen[a.id] = true;
+      if (known[a.id] !== h) upserts.push({ id: a.id, doc: packed });
+    });
+    var deletes = Object.keys(known).filter(function (id) { return !seen[id]; });
+    return { upserts: upserts, deletes: deletes, hashes: hashes };
+  }
+
+  function neonMetaRows() {
+    var snap = snapshot();
+    return NEON_META.map(function (k) {
+      return { key: k, value: snap[k] === undefined ? null : snap[k] };
+    });
+  }
+
+  /* ---- push ----
+   * One statement. The version guard sits in its own CTE and every other branch
+   * reads from it, which both orders them behind it and makes them no-ops when
+   * another device has moved the version on. Postgres runs a WITH's parts
+   * against one snapshot, so nothing here can half-apply.
+   */
+
+  var NEON_PUSH_SQL = [
+    'with bump as (',
+    '  update randomizer.state set version = version + 1, device = $4, updated_at = now()',
+    '  where id = true and ($3::bigint < 0 or version = $3::bigint)',
+    '  returning version',
+    '), ups as (',
+    '  insert into randomizer.albums (id, doc, updated_at)',
+    '  select x.id, x.doc, now()',
+    '  from jsonb_to_recordset($1::jsonb) as x(id text, doc jsonb)',
+    '  where exists (select 1 from bump)',
+    '  on conflict (id) do update set doc = excluded.doc, updated_at = now()',
+    '  returning 1',
+    '), dels as (',
+    '  delete from randomizer.albums',
+    '  where exists (select 1 from bump)',
+    '    and id in (select jsonb_array_elements_text($2::jsonb))',
+    '  returning 1',
+    '), mets as (',
+    '  insert into randomizer.meta (key, value, updated_at)',
+    '  select x.key, x.value, now()',
+    '  from jsonb_to_recordset($5::jsonb) as x(key text, value jsonb)',
+    '  where exists (select 1 from bump)',
+    '  on conflict (key) do update set value = excluded.value, updated_at = now()',
+    '  returning 1',
+    ')',
+    'select (select version from bump) as version,',
+    '       (select count(*) from ups)  as upserted,',
+    '       (select count(*) from dels) as deleted,',
+    '       (select count(*) from mets) as metas'
+  ].join('\n');
+
+  // force skips the version check, for taking ownership after a clash.
+  function neonPush(force) {
+    if (!neonConfigured()) return Promise.resolve(false);
+    if (syncBusy) return Promise.resolve(false);
+    syncBusy = true;
+    syncState = 'pushing';
+    renderSyncStatus();
+
+    var diff = neonDiff();
+    var device = state.neon.device || guessDeviceName();
+    var base = force ? -1 : (state.neon.version || 0);
+
+    return neonSql(NEON_PUSH_SQL, [
+      JSON.stringify(diff.upserts),
+      JSON.stringify(diff.deletes),
+      String(base),
+      device,
+      JSON.stringify(neonMetaRows())
+    ]).then(function (res) {
+      syncBusy = false;
+      var row = neonRows(res)[0] || {};
+      if (row.version === null || row.version === undefined) {
+        syncState = 'conflict';
+        syncNote = 'Another device saved since this one loaded. Pull to take theirs, ' +
+          'or push anyway to overwrite it.';
+        renderSyncStatus();
+        return false;
+      }
+      state.neon.version = Number(row.version);
+      state.neon.hashes = diff.hashes;      // only now is this what Neon holds
+      state.neon.lastPush = Date.now();
+      syncState = 'idle';
+      syncNote = 'Saved ' + row.upserted + ' album' + (Number(row.upserted) === 1 ? '' : 's') +
+        (Number(row.deleted) ? ', removed ' + row.deleted : '') +
+        ' at ' + new Date().toLocaleTimeString() + ' · version ' + row.version;
+      save(true);
+      renderSyncStatus();
+      return true;
+    }, function (err) {
+      syncBusy = false;
+      syncState = 'error';
+      syncNote = describeNeonError(err);
+      renderSyncStatus();
+      return false;
+    });
+  }
+
+  /* ---- pull ---- */
+
+  var NEON_PULL_SQL = [
+    'select',
+    "  (select coalesce(jsonb_agg(doc order by id), '[]'::jsonb) from randomizer.albums) as albums,",
+    "  (select coalesce(jsonb_object_agg(key, value), '{}'::jsonb) from randomizer.meta) as meta,",
+    '  (select version from randomizer.state where id = true) as version,',
+    '  (select device  from randomizer.state where id = true) as device,',
+    '  (select updated_at from randomizer.state where id = true) as updated_at'
+  ].join('\n');
+
+  function neonPull(quiet) {
+    if (!neonConfigured()) return Promise.resolve(false);
+    syncState = 'pulling';
+    renderSyncStatus();
+
+    return neonSql(NEON_PULL_SQL, []).then(function (res) {
+      var row = neonRows(res)[0];
+      if (!row) throw new Error('Neon returned no state row — was the schema created?');
+      var albums = asJson(row.albums) || [];
+      var meta = asJson(row.meta) || {};
+
+      if (!albums.length) {
+        syncState = 'idle';
+        syncNote = 'Neon is empty — use Upload to put this library there.';
+        renderSyncStatus();
+        if (!quiet) toast('Nothing in Neon yet.');
+        return false;
+      }
+
+      var remote = { albums: albums };
+      NEON_META.forEach(function (k) { if (meta[k] !== undefined) remote[k] = meta[k]; });
+      adopt(remote);
+
+      state.neon.version = Number(row.version || 0);
+      // Adopting means local now equals remote, so the next diff is empty.
+      state.neon.hashes = {};
+      state.library.forEach(function (a) {
+        state.neon.hashes[a.id] = docHash(JSON.stringify(packAlbum(a)));
+      });
+      state.neon.lastPull = new Date().toISOString();
+
+      syncState = 'idle';
+      syncNote = 'Loaded ' + state.library.length + ' albums' +
+        (row.device ? ' last saved on ' + row.device : '') +
+        ' · version ' + row.version;
+      save(true);
+      render();
+      renderSyncStatus();
+      if (!quiet) toast('Loaded from Neon.');
+      return true;
+    }, function (err) {
+      syncState = 'error';
+      syncNote = describeNeonError(err);
+      renderSyncStatus();
+      if (!quiet) toast('Pull failed: ' + syncNote);
+      return false;
+    });
+  }
+
+  function describeNeonError(err) {
+    var m = String((err && err.message) || err);
+    if (/password authentication failed/i.test(m)) return 'Neon rejected that password.';
+    if (/does not exist/i.test(m) && /relation/i.test(m)) {
+      return 'The randomizer tables are missing — run the schema SQL first.';
+    }
+    if (/permission denied/i.test(m)) return 'That role cannot touch those tables — check the grants.';
+    if (/Could not reach Neon/i.test(m)) return m + ' (check the host, or that the browser is online)';
+    return m;
+  }
+
+  /* ---- how much is waiting to go ---- */
+
+  function neonPendingCount() {
+    if (!neonConfigured()) return 0;
+    var d = neonDiff();
+    return d.upserts.length + d.deletes.length;
+  }
+
+  function renderNeonStatus() {
+    var box = $('#neon-status');
+    if (!box) return;
+    if (!neonConfigured()) {
+      box.textContent = 'Not connected — this device keeps its own copy.';
+      return;
+    }
+    var pending = neonPendingCount();
+    box.textContent = (syncNote || 'Connected.') +
+      (pending ? ' · ' + pending + ' change' + (pending === 1 ? '' : 's') + ' not yet sent' : '');
+  }
+
+  function wireNeon() {
+    $('#neon-save').addEventListener('click', function () {
+      var conn = $('#neon-conn').value.trim();
+      if (conn && !neonHost(conn)) {
+        toast('That does not look like a Neon connection string.');
+        return;
+      }
+      state.neon.conn = conn;
+      state.neon.device = $('#neon-device').value.trim() || guessDeviceName();
+      save(true);
+      renderNeonStatus();
+      toast(conn ? 'Connection saved on this device.' : 'Connection cleared.');
+    });
+
+    $('#neon-test').addEventListener('click', function () {
+      if (!neonConfigured()) { toast('Paste the connection string first.'); return; }
+      var box = $('#neon-probe');
+      box.hidden = false;
+      box.textContent = 'Checking…';
+      neonSql('select current_user as who, ' +
+              '(select count(*) from randomizer.albums) as albums, ' +
+              '(select count(*) from randomizer.meta) as meta, ' +
+              '(select version from randomizer.state where id = true) as version', [])
+        .then(function (res) {
+          var r = neonRows(res)[0] || {};
+          box.innerHTML =
+            '<div class="probe-row"><span class="probe-ok">✓</span> Connected as <b>' +
+              esc(String(r.who)) + '</b></div>' +
+            '<div class="probe-row"><span class="probe-ok">✓</span> ' + esc(String(r.albums)) +
+              ' albums, ' + esc(String(r.meta)) + ' meta rows, version ' + esc(String(r.version)) + '</div>';
+        }, function (err) {
+          box.innerHTML = '<div class="probe-row"><span class="probe-no">✕</span> ' +
+            esc(describeNeonError(err)) + '</div>';
+        });
+    });
+
+    // The one-time migration. Deliberately not the same button as a routine
+    // push: it says what it is about to do and refuses to run past existing
+    // data without being told twice.
+    $('#neon-upload').addEventListener('click', function () {
+      if (!neonConfigured()) { toast('Paste the connection string first.'); return; }
+      neonSql('select (select count(*) from randomizer.albums) as albums, ' +
+              '(select version from randomizer.state where id = true) as version', [])
+        .then(function (res) {
+          var r = neonRows(res)[0] || {};
+          var already = Number(r.albums || 0);
+          var msg = 'Upload ' + state.library.length + ' albums, ' + state.genres.length +
+            ' genres and the open day to Neon?';
+          if (already) {
+            msg = 'Neon already holds ' + already + ' albums (version ' + r.version + ').\n\n' +
+              'Uploading replaces them with this device’s ' + state.library.length +
+              ' albums. Anything saved from another device that is not here will be lost.\n\n' +
+              'Continue?';
+          }
+          if (!confirm(msg)) return;
+          // A first upload has nothing to diff against, so everything travels.
+          state.neon.hashes = {};
+          state.neon.version = Number(r.version || 0);
+          return neonPush(true).then(function (ok) {
+            if (ok) toast('Uploaded to Neon.');
+            renderNeonStatus();
+          });
+        }, function (err) {
+          toast('Could not read Neon: ' + describeNeonError(err));
+        });
+    });
+
+    $('#neon-pull').addEventListener('click', function () {
+      if (!neonConfigured()) { toast('Paste the connection string first.'); return; }
+      if (!confirm('Replace this device’s library with what Neon holds?')) return;
+      neonPull(false).then(renderNeonStatus);
+    });
+
+    $('#neon-push').addEventListener('click', function () {
+      if (!neonConfigured()) { toast('Paste the connection string first.'); return; }
+      neonPush(false).then(function (ok) {
+        if (ok) toast('Sent to Neon.');
+        renderNeonStatus();
+      });
+    });
+
+    $('#neon-forget').addEventListener('click', function () {
+      state.neon.conn = '';
+      save(true);
+      $('#neon-conn').value = '';
+      renderNeonStatus();
+      toast('Connection removed from this device.');
+    });
   }
 
   /* ──────────────────────────── session ──────────────────────────── */
@@ -3120,6 +3510,10 @@
     $('#sync-device').value = state.sync.device;
     renderSyncStatus();
 
+    $('#neon-conn').value = state.neon.conn;
+    $('#neon-device').value = state.neon.device || guessDeviceName();
+    renderNeonStatus();
+
     $('#sp-id').value = state.spotify.clientId;
     $('#sp-secret').value = state.spotify.clientSecret;
     renderSpotifyStatus();
@@ -3872,6 +4266,7 @@
     wireGenreOrder();
     wireBulk();
     wireSync();
+    wireNeon();
     wirePlaylist();
 
     render();

@@ -198,6 +198,37 @@
     </div>
 
     <div class="panel">
+      <h3>Database</h3>
+      <p class="dim">Keeps one library in Postgres, reachable from every device. The connection
+        string stays on this device and never travels with the library &mdash; your Spotify
+        credentials and this device&rsquo;s theme are left out of the database entirely.</p>
+      <label class="field">
+        <span>Connection string</span>
+        <span class="field-input"><input type="password" id="neon-conn" spellcheck="false" autocomplete="off"
+          placeholder="postgresql://album_app:…@ep-….neon.tech/neondb?sslmode=require"></span>
+        <small>The <b>album_app</b> role, not the project owner. It can read and write the
+          three <code>randomizer</code> tables and nothing else.</small>
+      </label>
+      <label class="field">
+        <span>This device is called</span>
+        <span class="field-input"><input type="text" id="neon-device" spellcheck="false" autocomplete="off"></span>
+        <small>Recorded against each save, so the database says where a change came from.</small>
+      </label>
+      <div class="btn-row">
+        <button class="btn" id="neon-save">Save connection</button>
+        <button class="btn" id="neon-test">Test connection</button>
+        <button class="btn btn-quiet" id="neon-forget">Forget connection</button>
+      </div>
+      <div class="probe" id="neon-probe" hidden></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="neon-upload">Upload library to Neon</button>
+        <button class="btn" id="neon-push">Send changes</button>
+        <button class="btn" id="neon-pull">Load from Neon</button>
+      </div>
+      <p class="sync-status" id="neon-status"></p>
+    </div>
+
+    <div class="panel">
       <h3>Sync</h3>
       <p class="dim">Keeps one library across every device. The app pulls when it opens and
         after it regains focus, and saves back a few seconds after you stop editing.
