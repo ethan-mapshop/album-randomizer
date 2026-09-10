@@ -2395,38 +2395,49 @@
   }
 
   // Both sets are natural breaks (Fisher-Jenks, k=5) over the library as it
-  // stood on 2026-09-06. Open at both ends, so a value outside the range they
-  // were derived from still lands in a band rather than vanishing. Recompute
-  // when the distributions have moved — the first set already drifted once.
+  // stands. Open at both ends, so a value outside the range they were derived
+  // from still lands in a band rather than vanishing. Recompute when the
+  // distributions have moved — this is the second recalculation.
+  //
+  // Jenks returns the inclusive top of each class and the filter tests
+  // [min, max), so every max below is that cut plus one step: the second RYM
+  // tier tops out at 3.28, so its max reads 3.29. The earlier sets missed this
+  // and put every value sitting exactly on a boundary a tier too high — 140
+  // albums at 39 minutes alone.
+  var RYM_STEP = 0.01;
 
-  // 3224 scores, 1.72–4.34, median 3.45. Goodness of variance fit 0.91.
+  // 3206 scores, 1.72–4.34, median 3.45. Goodness of variance fit 0.91.
   var RYM_BANDS = [
-    { min: -Infinity, max: 2.92 },
-    { min: 2.92, max: 3.27 },
-    { min: 3.27, max: 3.53 },
-    { min: 3.53, max: 3.80 },
-    { min: 3.80, max: Infinity }
+    { min: -Infinity, max: 2.94 },
+    { min: 2.94, max: 3.29 },
+    { min: 3.29, max: 3.55 },
+    { min: 3.55, max: 3.82 },
+    { min: 3.82, max: Infinity }
   ];
 
-  // 3239 runtimes, 4m–2h53m, median 44m. Goodness of variance fit 0.89.
+  var LENGTH_STEP = 1;
+
+  // 3221 runtimes, 5m–3h4m, median 45m. Goodness of variance fit 0.89.
   var LENGTH_BANDS = [
-    { min: -Infinity, max: 39 },
-    { min: 39, max: 49 },
-    { min: 49, max: 64 },
-    { min: 64, max: 99 },
-    { min: 99, max: Infinity }
+    { min: -Infinity, max: 41 },
+    { min: 41, max: 52 },
+    { min: 52, max: 66 },
+    { min: 66, max: 102 },
+    { min: 102, max: Infinity }
   ];
 
   // Labels come off the bounds so they can never drift from the filter itself.
-  function bandLabel(b, show) {
-    if (b.min === -Infinity) return 'Under ' + show(b.max);
+  // max is exclusive, so a label has to step back to stay honest: the tier
+  // stored as [41, 52) is the one a reader would call 41 – 51.
+  function bandLabel(b, show, step) {
+    if (b.min === -Infinity) return 'Up to ' + show(b.max - step);
     if (b.max === Infinity) return show(b.min) + ' and up';
-    return show(b.min) + ' – ' + show(b.max);
+    return show(b.min) + ' – ' + show(b.max - step);
   }
 
-  function bandOptions(bands, show, allLabel) {
+  function bandOptions(bands, show, allLabel, step) {
     return '<option value="">' + allLabel + '</option>' + bands.map(function (b, i) {
-      return '<option value="' + (i + 1) + '">' + esc(bandLabel(b, show)) + '</option>';
+      return '<option value="' + (i + 1) + '">' + esc(bandLabel(b, show, step)) + '</option>';
     }).join('');
   }
 
@@ -2838,10 +2849,11 @@
 
     // Built once — the bands are fixed, so rebuilding them per render would
     // only risk dropping the selection the way the genre select used to.
-    $('#lib-rym').innerHTML = bandOptions(RYM_BANDS, function (v) { return v.toFixed(2); }, 'All scores');
+    $('#lib-rym').innerHTML = bandOptions(RYM_BANDS, function (v) { return v.toFixed(2); },
+      'All scores', RYM_STEP);
     $('#lib-rym').addEventListener('change', function () { libLimit = LIB_LIMIT; renderRows(); });
 
-    $('#lib-length').innerHTML = bandOptions(LENGTH_BANDS, fmt, 'Any length');
+    $('#lib-length').innerHTML = bandOptions(LENGTH_BANDS, fmt, 'Any length', LENGTH_STEP);
     $('#lib-length').addEventListener('change', function () { libLimit = LIB_LIMIT; renderRows(); });
     $('#lib-decade').addEventListener('change', function () { libLimit = LIB_LIMIT; renderRows(); });
     $('#lib-genre').addEventListener('change', function () {
