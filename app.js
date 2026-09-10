@@ -50,6 +50,7 @@
         targetMinutes: 480,
         defaultMinutes: 45,
         favoritesBonus: true,
+        varietyDraw: true,
         desktopLinks: true,
         lastAddGenre: '',
         sidebarCollapsed: false,
@@ -1269,7 +1270,7 @@
 
   var SYNC_DEBOUNCE = 4000;     // quiet period after the last edit before pushing
   var SYNC_SETTINGS = ['targetMinutes', 'defaultMinutes', 'favoritesBonus',
-                       'desktopLinks', 'lastAddGenre'];
+                       'varietyDraw', 'desktopLinks', 'lastAddGenre'];
   var syncTimer = null;
   var syncBusy = false;
   var syncState = 'idle';       // idle | pulling | pushing | conflict | error | off
@@ -1780,10 +1781,96 @@
   }
 
   var slotSeq = 0;
+  /* ─────────────────────────── variety ───────────────────────────
+   * The rotation guarantees variety on exactly one axis: genre. A day can
+   * still come out as five albums from 1971-75, or ten that all run past the
+   * hour, or two records by the same artist filed under different genres. Each
+   * of those is the thing the rotation exists to prevent, happening where the
+   * rotation cannot see it.
+   *
+   * So the draw is weighted rather than uniform. An album whose artist, decade
+   * or length is already on today's list becomes less likely to be picked —
+   * never barred, because a genre down to its last few albums still has to
+   * serve one, and the day is supposed to stay random rather than become an
+   * optimisation.
+   */
+
+  var VARIETY = [
+    // Two records by one artist in a single day is the most obvious failure,
+    // so it is discouraged hardest. Length matters least: it is already
+    // constrained by the day's target running time.
+    { key: function (a) { return a.artist ? norm(a.artist) : null; }, penalty: 6 },
+    { key: function (a) { return a.year ? Math.floor(a.year / 10) : null; }, penalty: 2 },
+    { key: function (a) { return bandIndex(LENGTH_BANDS, a.minutes); }, penalty: 1 }
+  ];
+
+  function bandIndex(bands, v) {
+    if (v == null) return null;
+    for (var i = 0; i < bands.length; i++) {
+      if (v >= bands[i].min && v < bands[i].max) return i;
+    }
+    return null;
+  }
+
+  // What the day already holds, per axis. A reroll passes its own slot key so
+  // the album being replaced does not count against its replacement.
+  function varietyTally(session, exceptKey) {
+    var tally = VARIETY.map(function () { return {}; });
+    session.slots.forEach(function (slot) {
+      if (exceptKey && slot.key === exceptKey) return;
+      var a = slot.albumId ? byId(slot.albumId) : null;
+      if (!a) return;
+      VARIETY.forEach(function (axis, i) {
+        var k = axis.key(a);
+        if (k === null || k === undefined) return;
+        tally[i][k] = (tally[i][k] || 0) + 1;
+      });
+    });
+    return tally;
+  }
+
+  // 1 when nothing about this album is already on the day, falling as its
+  // artist, decade or length repeat. An album missing a value on some axis is
+  // neither rewarded nor punished for it — most of the library has years and
+  // runtimes, and the ones that do not should not become favourites by default.
+  function varietyWeight(album, tally) {
+    var w = 1;
+    for (var i = 0; i < VARIETY.length; i++) {
+      var k = VARIETY[i].key(album);
+      if (k === null || k === undefined) continue;
+      var seen = tally[i][k] || 0;
+      if (seen) w /= (1 + VARIETY[i].penalty * seen);
+    }
+    return w;
+  }
+
+  // Weighted sampling without replacement. The alternates offered alongside a
+  // pick are drawn the same way and count against each other, so opening the
+  // list gives four genuinely different options rather than four near-misses.
+  function pickVaried(pool, n, session, exceptKey) {
+    if (!state.settings.varietyDraw || !session) return pickRandom(pool, n);
+    var tally = varietyTally(session, exceptKey);
+    var copy = pool.slice(), out = [];
+    while (out.length < n && copy.length) {
+      var weights = copy.map(function (a) { return varietyWeight(a, tally); });
+      var total = 0;
+      for (var i = 0; i < weights.length; i++) total += weights[i];
+      var r = Math.random() * total, at = 0;
+      while (at < copy.length - 1 && r > weights[at]) { r -= weights[at]; at++; }
+      var chosen = copy.splice(at, 1)[0];
+      out.push(chosen);
+      VARIETY.forEach(function (axis, ai) {
+        var k = axis.key(chosen);
+        if (k !== null && k !== undefined) tally[ai][k] = (tally[ai][k] || 0) + 1;
+      });
+    }
+    return out;
+  }
+
   function makeSlot(session, genreIndex) {
     var used = usedIds(session);
     var pool = poolFor(genreIndex, used);
-    var picks = pickRandom(pool, 1 + ALT_COUNT);
+    var picks = pickVaried(pool, 1 + ALT_COUNT, session);
     var alts = [];
     for (var i = 1; i < picks.length; i++) alts.push(picks[i].id);
     return {
@@ -2123,8 +2210,10 @@
         $('#push-playlist').disabled = !live || playlistBusy || !spLinked();
       } else if (act === 'reroll') {
         // usedIds already excludes this slot's own album, so a reroll never
-        // hands back the same record.
-        var picks = pickRandom(poolFor(slot.genreIndex, usedIds(state.session)), 1 + ALT_COUNT);
+        // hands back the same record. The slot key goes too, so the album being
+        // replaced is not held against whatever replaces it.
+        var picks = pickVaried(poolFor(slot.genreIndex, usedIds(state.session)),
+          1 + ALT_COUNT, state.session, slot.key);
         if (!picks.length) { toast('No other unplayed albums in that genre.'); return; }
         slot.albumId = picks[0].id;
         slot.alternates = picks.slice(1).map(function (a) { return a.id; });
@@ -3356,6 +3445,7 @@
     $('#set-target').value = state.settings.targetMinutes / 60;
     $('#set-length').value = state.settings.defaultMinutes;
     $('#set-fav-bonus').checked = !!state.settings.favoritesBonus;
+    $('#set-variety').checked = !!state.settings.varietyDraw;
     $('#set-desktop-links').checked = !!state.settings.desktopLinks;
 
     $('#neon-conn').value = state.neon.conn;
@@ -3824,6 +3914,15 @@
       save();
       render();   // every link on every tab is rebuilt from this
       toast(this.checked ? 'Links open in the Spotify app.' : 'Links open the web player.');
+    });
+
+    // Only affects what the next draw does, so today is left alone: a day
+    // already picked is not improved by shuffling it under the reader.
+    $('#set-variety').addEventListener('change', function () {
+      state.settings.varietyDraw = this.checked;
+      save();
+      toast(this.checked ? 'Draws will spread artists, decades and lengths.'
+                         : 'Draws are back to plain random within each genre.');
     });
 
     $('#set-fav-bonus').addEventListener('change', function () {
