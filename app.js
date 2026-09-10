@@ -3985,25 +3985,42 @@
   // us into ids. About twenty calls for the whole library, and it is a read —
   // the endpoint that already works — so it does not wait on anything else.
   async function linkClassicalPlaylists(onStep) {
-    var byName = {}, offset = 0, seen = 0;
+    // Two keys per playlist. The exact name settles almost all of them; the
+    // folded one catches the rest, because the names we hold arrived as
+    // filenames and a filename cannot hold a colon or keep a double space.
+    // "Telemann - 55:a2" reached us as "Telemann - 55a2".
+    function foldName(s) {
+      return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '');
+    }
+    var byName = {}, byFold = {}, foldClash = {}, offset = 0, seen = 0;
     for (;;) {
       onStep('Reading your playlists — ' + seen + ' so far…');
       var j = await spUser('GET', '/me/playlists?limit=50&offset=' + offset);
       var items = (j && j.items) || [];
       items.forEach(function (p) {
-        if (p && p.name) byName[String(p.name).trim().toLowerCase()] = p.id;
+        if (!p || !p.name) return;
+        byName[String(p.name).trim().toLowerCase()] = p.id;
+        var f = foldName(p.name);
+        if (byFold[f] && byFold[f] !== p.id) foldClash[f] = true;
+        else byFold[f] = p.id;
       });
       seen += items.length;
       if (!items.length || !j.next) break;
       offset += items.length;
     }
 
-    // The name came from the export, so this is an exact match rather than the
-    // scoring the works themselves needed.
-    var linked = 0, already = 0, missing = [];
+    // The name came from the export rather than from the catalogue, so this is
+    // a lookup rather than the scoring the works themselves needed.
+    var linked = 0, already = 0, missing = [], ambiguous = [];
     state.library.forEach(function (a) {
       if (a.mode !== 'classical' || !a.playlistName) return;
       var id = byName[String(a.playlistName).trim().toLowerCase()];
+      if (!id) {
+        var f = foldName(a.playlistName);
+        // Never choose between two playlists that fold to the same key.
+        if (foldClash[f]) { ambiguous.push(a.playlistName); return; }
+        id = byFold[f];
+      }
       if (!id) { missing.push(a.playlistName); return; }
       if (a.playlistId === id) { already++; return; }
       a.playlistId = id;
@@ -4011,7 +4028,8 @@
     });
     save();
     render();
-    return { linked: linked, already: already, missing: missing, seen: seen };
+    return { linked: linked, already: already, missing: missing,
+             ambiguous: ambiguous, seen: seen };
   }
 
   function renderClassicalStatus() {
@@ -4111,6 +4129,7 @@
         btn.disabled = false;
         var bits = ['looked at ' + r.seen + ' playlists', r.linked + ' newly linked'];
         if (r.already) bits.push(r.already + ' already were');
+        if (r.ambiguous.length) bits.push(r.ambiguous.length + ' too alike to choose');
         if (r.missing.length) bits.push(r.missing.length + ' not found: ' + r.missing.slice(0, 4).join(', '));
         box.textContent = bits.join(' · ');
         toast('Linked ' + r.linked + ' playlists.');
