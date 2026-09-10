@@ -954,3 +954,33 @@ body[data-sidebar="collapsed"] .sidebar { display: none; }
 }
 .form-min > span { flex: 1 1 auto; min-width: 0; }
 .form-min input { width: 62px; flex: 0 0 auto; }
+
+/* ── classical columns ────────────────────────────────────────────────────
+   The two decks describe different things: an album has a release year and a
+   RateYourMusic score, a classical work has a form. Both sets of cells are
+   always in the markup and the deck decides which are shown, so the row stays
+   one template rather than two that drift apart. */
+#view-library { --col-form: 138px; }
+#lib-rows .row-form, .row-head .row-form {
+  width: var(--col-form); min-width: 0; text-align: center;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.row-form { display: none; }
+body[data-deck="classical"] .row-form { display: block; }
+body[data-deck="classical"] .row-year,
+body[data-deck="classical"] .row-rym { display: none; }
+
+/* The filters and the add form lose the same two fields with them. */
+body[data-deck="classical"] #lib-decade,
+body[data-deck="classical"] #lib-rym,
+body[data-deck="classical"] #lib-status option[value="noyear"],
+body[data-deck="classical"] #lib-status option[value="norym"],
+body[data-deck="classical"] .add-form .numbox-year,
+body[data-deck="classical"] .add-form .numbox-rym { display: none; }
+body:not([data-deck="classical"]) .add-form .form-pick { display: none; }
+
+/* At the stacked breakpoint the columns reflow rather than disappear, so Form
+   goes with its neighbours. */
+@media (max-width: 620px) {
+  #lib-rows .row-form { width: auto; }
+}

@@ -38,7 +38,7 @@
     <!-- Shown only on Library and Played; the counts mean different things on
          each, so the list is rebuilt when the view changes. -->
     <div class="side-genres" id="side-genres">
-      <h2 class="side-head">Genres</h2>
+      <h2 class="side-head" id="side-head">Genres</h2>
       <div class="glist" id="genre-list"></div>
     </div>
   </aside>
@@ -123,9 +123,10 @@
         <input type="text" id="add-artist" placeholder="Artist">
         <input type="text" id="add-title" placeholder="Album" required>
         <select id="add-genre" required></select>
-        <label class="numbox"><input type="number" id="add-year" min="1900" max="2100" step="1"
+        <select id="add-form" class="form-pick" aria-label="Form"></select>
+        <label class="numbox numbox-year"><input type="number" id="add-year" min="1900" max="2100" step="1"
           placeholder="—" aria-label="Release year"> yr</label>
-        <label class="numbox"><input type="number" id="add-rym" min="0" max="5" step="any"
+        <label class="numbox numbox-rym"><input type="number" id="add-rym" min="0" max="5" step="any"
           placeholder="—" aria-label="RateYourMusic score"> rym</label>
         <label class="mins"><input type="number" id="add-mins" min="1" max="300" placeholder="—"> min</label>
         <label class="check"><input type="checkbox" id="add-fav"> Favorite</label>
@@ -147,7 +148,8 @@
       <div class="row-head">
         <span class="rh-tick"></span>
         <span class="row-main">Artist · Album</span>
-        <span class="row-genre">Genre</span>
+        <span class="row-genre" id="rh-genre">Genre</span>
+        <span class="row-form">Form</span>
         <span class="row-year">Year</span>
         <span class="row-rym">RYM</span>
         <span class="row-len">Length</span>
@@ -335,8 +337,8 @@
     </div>
 
     <div class="panel">
-      <h3>Genres</h3>
-      <p class="dim">Rotation order. New genres go to the end.</p>
+      <h3 id="genre-panel-head">Genres</h3>
+      <p class="dim" id="genre-panel-note">Rotation order. New genres go to the end.</p>
       <ol class="genre-order" id="genre-order"></ol>
       <form class="inline-form" id="genre-form">
         <input type="text" id="new-genre" placeholder="New genre name">

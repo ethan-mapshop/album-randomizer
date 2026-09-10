@@ -2435,7 +2435,8 @@
     var total = playedView
       ? lib.filter(function (a) { return a.played; }).length
       : lib.filter(function (a) { return !a.played; }).length;
-    box.appendChild(genreItem('', 'All genres', total, playedView ? null : lib.length));
+    box.appendChild(genreItem('', isClassical() ? 'All periods' : 'All genres', total,
+      playedView ? null : lib.length));
 
     deck().genres.forEach(function (g) {
       var all = lib.filter(function (a) { return a.genre === g; });
@@ -2465,6 +2466,10 @@
     // A classical record is a work, not an album, and calling it one reads as a
     // bug the moment the deck holds 616 of them.
     var noun = isClassical() ? ' works · ' : ' albums · ';
+    var head = $('#rh-genre');
+    if (head) head.textContent = isClassical() ? 'Period' : 'Genre';
+    var side = $('#side-head');
+    if (side) side.textContent = isClassical() ? 'Periods' : 'Genres';
     $('#library-summary').textContent = lib.length + noun + (lib.length - played) +
       ' unplayed · ' + lib.filter(function (a) { return a.fav; }).length + ' favorites';
 
@@ -2475,7 +2480,14 @@
     // the value is written from that rather than kept independently. It earns
     // its place because the sidebar can be collapsed away entirely.
     var gsel = $('#lib-genre');
-    gsel.innerHTML = '<option value="">All genres</option>' +
+    var fsel = $('#add-form');
+    if (fsel) {
+      fsel.innerHTML = Object.keys(state.settings.formMinutes || {}).sort().map(function (f) {
+        return '<option value="' + esc(f) + '">' + esc(f) + '</option>';
+      }).join('');
+    }
+    gsel.innerHTML = '<option value="">' + (isClassical() ? 'All periods' : 'All genres') +
+      '</option>' +
       deck().genres.map(function (g) {
         return '<option value="' + esc(g) + '">' + esc(g) + '</option>';
       }).join('');
@@ -2685,22 +2697,32 @@
 
   // Column names match what the bulk importer looks for, so an exported sheet
   // can be edited and fed straight back in.
-  var CSV_COLUMNS = [
-    ['Artist', function (a) { return a.artist || ''; }],
-    ['Album', function (a) { return a.title || a.name; }],
-    ['Genre', function (a) { return a.genre; }],
-    ['Year', function (a) { return a.year || ''; }],
-    ['RYM', function (a) { return a.rym || a.rym === 0 ? Number(a.rym).toFixed(2) : ''; }],
-    ['Runtime', function (a) { return a.minutes || ''; }],
-    ['Favorite', function (a) { return a.fav ? 'yes' : ''; }],
-    ['Played', function (a) { return a.played ? 'yes' : ''; }],
-    ['Played On', function (a) { return a.playedAt || ''; }]
-  ];
+  // An export describes the deck it came from: a classical file carrying two
+  // permanently empty columns would only invite someone to fill them in.
+  function csvColumns() {
+    var head = [
+      ['Artist', function (a) { return a.artist || ''; }],
+      ['Album', function (a) { return a.title || a.name; }]
+    ];
+    var mid = isClassical()
+      ? [['Period', function (a) { return a.genre; }],
+         ['Form', function (a) { return a.form || ''; }]]
+      : [['Genre', function (a) { return a.genre; }],
+         ['Year', function (a) { return a.year || ''; }],
+         ['RYM', function (a) { return a.rym || a.rym === 0 ? Number(a.rym).toFixed(2) : ''; }]];
+    return head.concat(mid, [
+      ['Runtime', function (a) { return a.minutes || ''; }],
+      ['Favorite', function (a) { return a.fav ? 'yes' : ''; }],
+      ['Played', function (a) { return a.played ? 'yes' : ''; }],
+      ['Played On', function (a) { return a.playedAt || ''; }]
+    ]);
+  }
 
   function buildCsv(rows) {
-    var out = [CSV_COLUMNS.map(function (c) { return csvCell(c[0]); }).join(',')];
+    var cols = csvColumns();
+    var out = [cols.map(function (c) { return csvCell(c[0]); }).join(',')];
     rows.forEach(function (a) {
-      out.push(CSV_COLUMNS.map(function (c) { return csvCell(c[1](a)); }).join(','));
+      out.push(cols.map(function (c) { return csvCell(c[1](a)); }).join(','));
     });
     // CRLF and a BOM so Excel opens it as UTF-8 and keeps the accents.
     return '\ufeff' + out.join('\r\n') + '\r\n';
@@ -2722,12 +2744,21 @@
         '<select class="edit-genre">' + deck().genres.map(function (g) {
           return '<option value="' + esc(g) + '"' + (g === a.genre ? ' selected' : '') + '>' + esc(g) + '</option>';
         }).join('') + '</select>' +
-        '<label class="numbox"><input type="number" class="edit-year" min="1900" max="2100" step="1"' +
-          ' placeholder="—" aria-label="Release year" value="' + (a.year || '') + '"> yr</label>' +
-        // step="any" so a raw average pasted from RYM is accepted and rounded,
-        // rather than the browser refusing it over a step mismatch.
-        '<label class="numbox"><input type="number" class="edit-rym" min="0" max="5" step="any"' +
-          ' placeholder="—" aria-label="RateYourMusic score" value="' + (a.rym || '') + '"> rym</label>' +
+        // A classical work has a form and no release year or score, so the
+        // editor offers what the record actually has rather than three boxes
+        // that will always be blank.
+        (a.mode === 'classical'
+          ? '<select class="edit-form" aria-label="Form">' +
+              Object.keys(state.settings.formMinutes || {}).sort().map(function (f) {
+                return '<option value="' + esc(f) + '"' + (f === a.form ? ' selected' : '') +
+                  '>' + esc(f) + '</option>';
+              }).join('') + '</select>'
+          : '<label class="numbox"><input type="number" class="edit-year" min="1900" max="2100" step="1"' +
+              ' placeholder="—" aria-label="Release year" value="' + (a.year || '') + '"> yr</label>' +
+            // step="any" so a raw average pasted from RYM is accepted and rounded,
+            // rather than the browser refusing it over a step mismatch.
+            '<label class="numbox"><input type="number" class="edit-rym" min="0" max="5" step="any"' +
+              ' placeholder="—" aria-label="RateYourMusic score" value="' + (a.rym || '') + '"> rym</label>') +
         '<label class="numbox"><input type="number" class="edit-tracks" min="1" max="200" step="1"' +
           ' placeholder="—" aria-label="Tracks to take from the linked release"' +
           ' value="' + (a.tracks || '') + '"> trk</label>' +
@@ -2855,6 +2886,8 @@
           // The badge hugs its text; the wrapper is what holds the column width,
           // so a long genre name cannot shove the numbers out of alignment.
           '<span class="row-genre"><span class="genre-badge">' + esc(a.genre) + '</span></span>' +
+          '<span class="row-form' + (a.form ? '' : ' is-blank') + '" title="Form">' +
+            esc(a.form || '—') + '</span>' +
           '<span class="row-year' + (a.year ? '' : ' is-blank') + '" title="Release year">' +
             (a.year || '—') + '</span>' +
           '<span class="row-rym' + (a.rym ? '' : ' is-blank') + '" title="RateYourMusic score">' +
@@ -3163,8 +3196,14 @@
       a.title = title;
       a.name = name;
       a.genre = form.querySelector('.edit-genre').value;
-      a.year = parseYear(form.querySelector('.edit-year').value);
-      a.rym = parseRym(form.querySelector('.edit-rym').value);
+      // Whichever pair the editor offered for this deck is the pair it reads back.
+      var formSel = form.querySelector('.edit-form');
+      if (formSel) {
+        a.form = formSel.value;
+      } else {
+        a.year = parseYear(form.querySelector('.edit-year').value);
+        a.rym = parseRym(form.querySelector('.edit-rym').value);
+      }
       a.tracks = parseTracks(form.querySelector('.edit-tracks').value);
       var mins = parseMinutes(form.querySelector('.edit-mins').value);
       a.minutes = mins;
@@ -3283,12 +3322,18 @@
       if (byId(id)) { toast('That album is already in the library.'); return; }
       var mins = parseMinutes($('#add-mins').value);
       var genre = $('#add-genre').value;
+      // A work added to the classical deck needs a form, or it has no length
+      // estimate and draws at the album fallback instead.
+      var cl = isClassical();
       state.library.push({
         id: id, name: name, artist: artist, title: title,
         genre: genre, fav: $('#add-fav').checked,
         minutes: mins, approx: false,
         played: false, playedAt: null, custom: true,
-        year: parseYear($('#add-year').value), rym: parseRym($('#add-rym').value)
+        mode: cl ? 'classical' : null,
+        form: cl ? ($('#add-form').value || null) : null,
+        year: cl ? null : parseYear($('#add-year').value),
+        rym: cl ? null : parseRym($('#add-rym').value)
       });
       // Albums get added in runs within one genre, so the next one starts where
       // this one left off instead of jumping back to the top of the list.
@@ -3551,6 +3596,14 @@
       return '<option value="' + i + '"' + (i === deck().rotation ? ' selected' : '') + '>' + esc(g) + '</option>';
     }).join('');
 
+    var gh = $('#genre-panel-head');
+    if (gh) gh.textContent = isClassical() ? 'Periods' : 'Genres';
+    var gn = $('#genre-panel-note');
+    if (gn) {
+      gn.textContent = isClassical()
+        ? 'Rotation order. New periods go to the end.'
+        : 'Rotation order. New genres go to the end.';
+    }
     renderGenreOrder();
     renderClassicalStatus();
     renderFormMinutes();
@@ -4223,6 +4276,13 @@
     if (to === state.mode || !state.decks[to]) return;
     state.mode = to;
     genreFilter = '';
+    // A filter on something the new deck does not have would hide everything.
+    var st = $('#lib-status');
+    if (to === 'classical' && st && (st.value === 'noyear' || st.value === 'norym')) {
+      st.value = 'unplayed';
+    }
+    var dec = $('#lib-decade'); if (dec) dec.value = '';
+    var ryb = $('#lib-rym');    if (ryb) ryb.value = '';
     libLimit = LIB_LIMIT;
     selected = {};
     editingId = null;
