@@ -149,7 +149,11 @@
       } catch (e) { /* corrupt payload — fall back to a fresh library */ }
     }
     if (!st.neon.device) st.neon.device = guessDeviceName();
-    mergeSeed(st);
+    // albums.js exists to fill a library that has no other source. Once a
+    // database is configured it is the record, and topping up from the seed
+    // would quietly resurrect albums deleted on another device — or, on a
+    // device that edits before its first pull lands, push them back up.
+    if (!st.neon.conn) mergeSeed(st);
     backfill(st);
     if (st.rotation >= st.genres.length) st.rotation = 0;
     state = st;      // ensureHues reads through state
