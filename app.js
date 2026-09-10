@@ -106,7 +106,9 @@
       candidates: null,
       mode: s.mode === 'classical' ? 'classical' : null,
       form: s.form || null,
-      trackIds: (s.trackIds && s.trackIds.length) ? s.trackIds.slice() : null
+      trackIds: (s.trackIds && s.trackIds.length) ? s.trackIds.slice() : null,
+      playlistName: s.playlistName || null,
+      playlistId: s.playlistId || null
     };
   }
 
@@ -294,6 +296,9 @@
   // same target to the web player. The album id is the durable half of a stored
   // link, so a URI can be rebuilt whichever field survived.
   function spotifyUri(album) {
+    // A classical work is a playlist, not an album — opening the playlist is
+    // the whole point, and a search for "Bach - 1041" would find nothing.
+    if (album.playlistId) return 'spotify:playlist:' + album.playlistId;
     var id = album.spotifyId ||
       (String(album.spotifyUrl || '').match(/\/album\/([A-Za-z0-9]+)/) || [])[1];
     return id ? 'spotify:album:' + id : 'spotify:search:' + encodeURIComponent(album.name);
@@ -302,9 +307,12 @@
   // Both attributes together: a custom scheme hands off to the OS and strands an
   // empty tab when opened with target=_blank, so only web links get one.
   function spotifyLink(album) {
+  // The web link needs the same preference, for a device set to open the
+  // player in a browser rather than the app.
     var href = state.settings.desktopLinks
       ? spotifyUri(album)
-      : (album.spotifyUrl || spotifyUrl(album.name));
+      : (album.playlistId ? 'https://open.spotify.com/playlist/' + album.playlistId
+         : (album.spotifyUrl || spotifyUrl(album.name)));
     return 'href="' + esc(href) + '"' +
       (href.indexOf('spotify:') === 0 ? '' : ' target="_blank" rel="noopener"');
   }
@@ -1341,6 +1349,8 @@
       // from a playlist export, so they are the record itself and must travel,
       // or a second device gets the works and none of their music.
       if (a.trackIds && a.trackIds.length) o.trackIds = a.trackIds;
+      if (a.playlistName) o.playlistName = a.playlistName;
+      if (a.playlistId) o.playlistId = a.playlistId;
     }
     if (a.approx) o.approx = 1;
     if (a.match && a.match !== 'auto') o.match = a.match;
@@ -3945,15 +3955,49 @@
   }
 
   function classicalStats() {
-    var have = 0, timed = 0, tracked = 0;
+    var have = 0, timed = 0, tracked = 0, linked = 0;
     state.library.forEach(function (a) {
       if (a.mode !== 'classical') return;
       have++;
       if (a.minutes) timed++;
       if (a.trackIds && a.trackIds.length) tracked++;
+      if (a.playlistId) linked++;
     });
     var avail = (typeof CLASSICAL !== 'undefined' && CLASSICAL.works) ? CLASSICAL.works.length : 0;
-    return { have: have, available: avail, timed: timed, tracked: tracked };
+    return { have: have, available: avail, timed: timed, tracked: tracked, linked: linked };
+  }
+
+  // One pass over the account's own playlists turns the names the export gave
+  // us into ids. About twenty calls for the whole library, and it is a read —
+  // the endpoint that already works — so it does not wait on anything else.
+  async function linkClassicalPlaylists(onStep) {
+    var byName = {}, offset = 0, seen = 0;
+    for (;;) {
+      onStep('Reading your playlists — ' + seen + ' so far…');
+      var j = await spUser('GET', '/me/playlists?limit=50&offset=' + offset);
+      var items = (j && j.items) || [];
+      items.forEach(function (p) {
+        if (p && p.name) byName[String(p.name).trim().toLowerCase()] = p.id;
+      });
+      seen += items.length;
+      if (!items.length || !j.next) break;
+      offset += items.length;
+    }
+
+    // The name came from the export, so this is an exact match rather than the
+    // scoring the works themselves needed.
+    var linked = 0, already = 0, missing = [];
+    state.library.forEach(function (a) {
+      if (a.mode !== 'classical' || !a.playlistName) return;
+      var id = byName[String(a.playlistName).trim().toLowerCase()];
+      if (!id) { missing.push(a.playlistName); return; }
+      if (a.playlistId === id) { already++; return; }
+      a.playlistId = id;
+      linked++;
+    });
+    save();
+    render();
+    return { linked: linked, already: already, missing: missing, seen: seen };
   }
 
   function renderClassicalStatus() {
@@ -3963,8 +4007,8 @@
     box.textContent = !s.available
       ? 'classical.js did not load, so there is nothing to import.'
       : s.have
-        ? s.have + ' of ' + s.available + ' works in the library · ' + s.timed +
-          ' with a measured runtime · ' + s.tracked + ' carrying their tracks'
+        ? s.have + ' of ' + s.available + ' works · ' + s.timed + ' timed · ' +
+          s.tracked + ' with tracks · ' + s.linked + ' linked to their playlist'
         : 'Not loaded yet — the classical deck is empty.';
   }
 
@@ -3992,6 +4036,7 @@
           have.trackIds = w.t.slice();
           touched = true;
         }
+        if (w.p && !have.playlistName) { have.playlistName = w.p; touched = true; }
         if (w.m > 0 && !have.minutes) { have.minutes = w.m; have.approx = false; touched = true; }
         if (!have.form && w.form) { have.form = w.form; touched = true; }
         if (touched) filled++;
@@ -4001,7 +4046,7 @@
         id: w.id, name: w.artist + ' - ' + w.title,
         artist: w.artist, title: w.title,
         genre: w.genre, form: w.form, mode: 'classical', custom: 1,
-        minutes: w.m || null, trackIds: w.t || null
+        minutes: w.m || null, trackIds: w.t || null, playlistName: w.p || null
       }));
       added++;
     });
@@ -4042,6 +4087,25 @@
 
   function wireClassical() {
     $('#cl-import').addEventListener('click', importClassical);
+
+    $('#cl-link').addEventListener('click', function () {
+      if (!spLinked()) { toast('Connect your Spotify account first.'); return; }
+      var box = $('#cl-status');
+      var btn = $('#cl-link');
+      btn.disabled = true;
+      linkClassicalPlaylists(function (msg) { box.textContent = msg; }).then(function (r) {
+        btn.disabled = false;
+        var bits = ['looked at ' + r.seen + ' playlists', r.linked + ' newly linked'];
+        if (r.already) bits.push(r.already + ' already were');
+        if (r.missing.length) bits.push(r.missing.length + ' not found: ' + r.missing.slice(0, 4).join(', '));
+        box.textContent = bits.join(' · ');
+        toast('Linked ' + r.linked + ' playlists.');
+      }, function (err) {
+        btn.disabled = false;
+        box.textContent = 'Stopped: ' + (err.message === 'RATE_LIMIT'
+          ? 'Spotify is rate-limiting this app — try again later.' : err.message);
+      });
+    });
     $('#form-mins').addEventListener('change', function (e) {
       var f = e.target.dataset.form;
       if (!f) return;
