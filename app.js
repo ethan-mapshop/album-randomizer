@@ -1215,11 +1215,15 @@
     }
     if (!uris.length) throw new Error('None of the picked albums could be read from Spotify.');
 
+    // Spotify retired /playlists/{id}/tracks in February 2026 in favour of
+    // /items, and the retired path answers 403 rather than 404 — which reads
+    // exactly like a permissions problem and cost a long detour through
+    // dashboard apps and scopes. The body is unchanged.
     onStep('Replacing the playlist with ' + uris.length + ' tracks…');
-    await spUser('PUT', '/playlists/' + target + '/tracks', { uris: uris.slice(0, PL_CHUNK) });
+    await spUser('PUT', '/playlists/' + target + '/items', { uris: uris.slice(0, PL_CHUNK) });
     for (var at = PL_CHUNK; at < uris.length; at += PL_CHUNK) {
       onStep('Adding ' + Math.min(at + PL_CHUNK, uris.length) + ' of ' + uris.length + '…');
-      await spUser('POST', '/playlists/' + target + '/tracks', { uris: uris.slice(at, at + PL_CHUNK) });
+      await spUser('POST', '/playlists/' + target + '/items', { uris: uris.slice(at, at + PL_CHUNK) });
     }
     return { tracks: uris.length, albums: albums, skipped: skipped, trimmed: trimmed,
              cached: cached, id: target };
