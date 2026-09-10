@@ -921,3 +921,36 @@ body[data-sidebar="collapsed"] .sidebar { display: none; }
 #sync-owner, #sync-repo, #sync-branch { width: 130px; }
 #sync-path, #sync-token, #sync-device { width: 190px; }
 #sync-token { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+
+/* ── deck switch ──────────────────────────────────────────────────────────
+   Albums and Classical are separate libraries, not a filter, so the control
+   sits above the section tabs rather than among them. */
+.decks {
+  display: flex; gap: 2px; margin: 0 0 12px;
+  padding: 2px; border-radius: 8px; background: var(--panel-2, rgba(127,127,127,.12));
+}
+.deck {
+  flex: 1 1 0; min-width: 0;
+  padding: 6px 8px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text-dim, inherit);
+  font: inherit; font-size: 13px; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.deck:hover { color: var(--text, inherit); }
+.deck.is-on {
+  background: var(--panel, rgba(127,127,127,.2)); color: var(--text, inherit);
+  box-shadow: 0 1px 2px rgba(0,0,0,.18);
+}
+
+/* Assumed length per classical form. Two columns where there is room, so ten
+   forms do not become ten full-width rows. */
+.form-mins {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 4px 14px; margin-top: 6px;
+}
+.form-min {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text-dim, inherit);
+}
+.form-min > span { flex: 1 1 auto; min-width: 0; }
+.form-min input { width: 62px; flex: 0 0 auto; }

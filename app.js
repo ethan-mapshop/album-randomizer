@@ -66,6 +66,11 @@
       settings: {
         targetMinutes: 480,
         defaultMinutes: 45,
+        // Per classical form, because form predicts length far better than one
+        // flat number can — a solo piano piece and a symphony are not the same
+        // guess. Seeded from classical.js and editable in Settings.
+        formMinutes: (typeof CLASSICAL !== 'undefined' && CLASSICAL.formMinutes)
+          ? JSON.parse(JSON.stringify(CLASSICAL.formMinutes)) : {},
         favoritesBonus: true,
         varietyDraw: true,
         desktopLinks: true,
@@ -98,7 +103,9 @@
       spotifyUrl: s.sp ? (s.spotifyUrl || 'https://open.spotify.com/album/' + s.sp) : null,
       matchName: s.sp ? (s.matchName || ((s.artist ? s.artist + ' - ' : '') + s.title)) : null,
       match: s.match || (s.sp ? 'auto' : null),
-      candidates: null
+      candidates: null,
+      mode: s.mode === 'classical' ? 'classical' : null,
+      form: s.form || null
     };
   }
 
@@ -1307,8 +1314,8 @@
    */
 
   var SYNC_DEBOUNCE = 4000;     // quiet period after the last edit before pushing
-  var SYNC_SETTINGS = ['targetMinutes', 'defaultMinutes', 'favoritesBonus',
-                       'varietyDraw', 'desktopLinks', 'lastAddGenre'];
+  var SYNC_SETTINGS = ['targetMinutes', 'defaultMinutes', 'formMinutes',
+                       'favoritesBonus', 'varietyDraw', 'desktopLinks', 'lastAddGenre'];
   var syncTimer = null;
   var syncBusy = false;
   var syncState = 'idle';       // idle | pulling | pushing | conflict | error | off
@@ -1809,6 +1816,16 @@
 
   // The favourites pool deliberately ignores played, so a favourite can come
   // round again any day. A genre pool still retires what it has served.
+  // What to assume a record runs to when nothing has measured it. A classical
+  // work answers from its form; everything else falls back to the one number.
+  function estimateFor(a) {
+    if (a && a.mode === 'classical' && a.form) {
+      var m = state.settings.formMinutes && state.settings.formMinutes[a.form];
+      if (m > 0) return m;
+    }
+    return state.settings.defaultMinutes;
+  }
+
   function poolFor(genreIndex, exclude) {
     var out = [];
     for (var i = 0; i < state.library.length; i++) {
@@ -1860,6 +1877,9 @@
     // constrained by the day's target running time.
     { key: function (a) { return a.artist ? norm(a.artist) : null; }, penalty: 6 },
     { key: function (a) { return a.year ? Math.floor(a.year / 10) : null; }, penalty: 2 },
+    // Classical works carry a form and no year, albums the reverse, so each
+    // axis quietly switches itself off on the deck it does not apply to.
+    { key: function (a) { return a.form || null; }, penalty: 2 },
     { key: function (a) { return bandIndex(LENGTH_BANDS, a.minutes); }, penalty: 1 }
   ];
 
@@ -1937,7 +1957,8 @@
       genreIndex: genreIndex,
       albumId: picks.length ? picks[0].id : null,
       alternates: alts,
-      minutes: (picks.length && picks[0].minutes) || state.settings.defaultMinutes,
+      minutes: (picks.length && (picks[0].minutes || estimateFor(picks[0]))) ||
+        state.settings.defaultMinutes,
       added: false,
       altsOpen: false
     };
@@ -2353,7 +2374,7 @@
       var slot = slotFromEvent(e);
       if (!slot) return;
       if (!slot.minutes) {
-        slot.minutes = state.settings.defaultMinutes;
+        slot.minutes = estimateFor(byId(slot.albumId));
         e.target.value = slot.minutes;
       }
       // Remember it on the album itself, so it is only ever typed once.
@@ -2408,7 +2429,7 @@
     var box = $('#genre-list');
     if (!box) return;
     var playedView = document.body.dataset.view === 'played';
-    var lib = state.library;
+    var lib = state.library.filter(inMode);
 
     box.textContent = '';
     var total = playedView
@@ -2439,9 +2460,12 @@
   }
 
   function renderLibrary() {
-    var lib = state.library;
+    var lib = state.library.filter(inMode);
     var played = lib.filter(function (a) { return a.played; }).length;
-    $('#library-summary').textContent = lib.length + ' albums · ' + (lib.length - played) +
+    // A classical record is a work, not an album, and calling it one reads as a
+    // bug the moment the deck holds 616 of them.
+    var noun = isClassical() ? ' works · ' : ' albums · ';
+    $('#library-summary').textContent = lib.length + noun + (lib.length - played) +
       ' unplayed · ' + lib.filter(function (a) { return a.fav; }).length + ' favorites';
 
     // Only decades that actually hold albums, so the list never offers an empty
@@ -2482,7 +2506,7 @@
 
   // One sentence explaining where a length came from, used in both tooltips.
   function lengthNote(a) {
-    if (!a.minutes) return 'No length yet — using the ' + state.settings.defaultMinutes + ' minute estimate.';
+    if (!a.minutes) return 'No length yet — using the ' + estimateFor(a) + ' minute estimate.';
     if (a.approx) return 'Estimated from ' + (a.tracks || '?') + ' tracks — Spotify would not give the exact time.' +
       (a.matchName ? ' Matched: ' + a.matchName : '');
     return 'Exact running time from Spotify.' + (a.matchName ? ' Matched: ' + a.matchName : '');
@@ -2748,6 +2772,7 @@
     var len = $('#lib-length').value ? LENGTH_BANDS[+$('#lib-length').value - 1] : null;
 
     var matches = state.library.filter(function (a) {
+      if (!inMode(a)) return false;
       if (band && (a.rym == null || a.rym < band.min || a.rym >= band.max)) return false;
       if (len && (!a.minutes || a.minutes < len.min || a.minutes >= len.max)) return false;
       if (decade !== null && (!a.year || Math.floor(a.year / 10) * 10 !== decade)) return false;
@@ -3284,7 +3309,7 @@
   /* ──────────────────────────── played ──────────────────────────── */
 
   function renderPlayed() {
-    var all = state.library.filter(function (a) { return a.played; });
+    var all = state.library.filter(function (a) { return a.played && inMode(a); });
     var played = genreFilter
       ? all.filter(function (a) { return a.genre === genreFilter; })
       : all;
@@ -3527,17 +3552,20 @@
     }).join('');
 
     renderGenreOrder();
+    renderClassicalStatus();
+    renderFormMinutes();
   }
 
   function lengthStats() {
     var known = 0, review = 0, missing = 0, none = 0;
-    state.library.forEach(function (a) {
+    state.library.filter(inMode).forEach(function (a) {
       if (a.minutes) known++;
       else if (a.match === 'review') review++;
       else if (a.match === 'none') none++;
       else missing++;
     });
-    return { known: known, review: review, none: none, missing: missing, total: state.library.length };
+    return { known: known, review: review, none: none, missing: missing,
+             total: state.library.filter(inMode).length };
   }
 
   function renderSpotifyStatus() {
@@ -3804,7 +3832,7 @@
 
     $('#sp-run').addEventListener('click', function () {
       var retry = $('#sp-retry').checked;
-      var pending = state.library.filter(function (a) { return needsLookup(a, retry); }).length;
+      var pending = state.library.filter(function (a) { return inMode(a) && needsLookup(a, retry); }).length;
       if (!pending) { toast('Nothing left to look up.'); return; }
       if (lookupBusy) { toast('A lookup is already running.'); return; }
 
@@ -3814,7 +3842,7 @@
       $('#sp-progress').hidden = false;
 
       lookupBusy = true;
-      runLookup(state.library.filter(function (a) { return needsLookup(a, retry); }), function (stats) {
+      runLookup(state.library.filter(function (a) { return inMode(a) && needsLookup(a, retry); }), function (stats) {
         $('#sp-fill').style.width = ((stats.done / stats.total) * 100) + '%';
         var bits = [stats.done + ' of ' + stats.total];
         bits.push(stats.auto + ' matched' + (stats.queued ? ' (+' + stats.queued + ' queued)' : ''));
@@ -3854,6 +3882,90 @@
       $('#sp-stop').disabled = true;
       $('#sp-log').textContent += ' — stopping…';
       setTimeout(function () { $('#sp-stop').disabled = false; }, 1500);
+    });
+  }
+
+  function classicalStats() {
+    var have = 0;
+    state.library.forEach(function (a) { if (a.mode === 'classical') have++; });
+    var avail = (typeof CLASSICAL !== 'undefined' && CLASSICAL.works) ? CLASSICAL.works.length : 0;
+    return { have: have, available: avail };
+  }
+
+  function renderClassicalStatus() {
+    var box = $('#cl-status');
+    if (!box) return;
+    var s = classicalStats();
+    box.textContent = !s.available
+      ? 'classical.js did not load, so there is nothing to import.'
+      : s.have
+        ? s.have + ' of ' + s.available + ' works are in the library.'
+        : 'Not loaded yet — the classical deck is empty.';
+  }
+
+  // Adds only what is missing and never touches what is there, so running it
+  // twice is harmless and a work deleted on purpose stays deleted.
+  function importClassical() {
+    if (typeof CLASSICAL === 'undefined' || !CLASSICAL.works) {
+      toast('classical.js did not load.');
+      return;
+    }
+    var known = {}, gone = {};
+    state.library.forEach(function (a) { known[a.id] = true; });
+    (state.deletedSeedIds || []).forEach(function (id) { gone[id] = true; });
+    var added = 0;
+    CLASSICAL.works.forEach(function (w) {
+      if (known[w.id] || gone[w.id]) return;
+      state.library.push(seedAlbum({
+        id: w.id, name: w.artist + ' - ' + w.title,
+        artist: w.artist, title: w.title,
+        genre: w.genre, form: w.form, mode: 'classical', custom: 1
+      }));
+      added++;
+    });
+    // The periods travel with the works: a deck with no genres cannot draw.
+    var g = state.decks.classical.genres;
+    CLASSICAL.periods.forEach(function (p) { if (g.indexOf(p) === -1) g.push(p); });
+    if (!state.settings.formMinutes || !Object.keys(state.settings.formMinutes).length) {
+      state.settings.formMinutes = JSON.parse(JSON.stringify(CLASSICAL.formMinutes));
+    }
+    ensureHues();
+    save();
+    render();
+    renderClassicalStatus();
+    renderFormMinutes();
+    toast(added ? 'Added ' + added + ' classical works.' : 'Nothing new to add.');
+  }
+
+  function renderFormMinutes() {
+    var box = $('#form-mins');
+    if (!box) return;
+    var fm = state.settings.formMinutes || {};
+    var keys = Object.keys(fm).sort();
+    if (!keys.length) { box.innerHTML = ''; return; }
+    var counts = {};
+    state.library.forEach(function (a) {
+      if (a.mode === 'classical' && a.form) counts[a.form] = (counts[a.form] || 0) + 1;
+    });
+    box.innerHTML = keys.map(function (k) {
+      return '<label class="form-min"><span>' + esc(k) +
+        (counts[k] ? ' <small class="dim">' + counts[k] + '</small>' : '') + '</span>' +
+        '<input type="number" min="1" max="300" data-form="' + esc(k) +
+        '" value="' + fm[k] + '"> min</label>';
+    }).join('');
+  }
+
+  function wireClassical() {
+    $('#cl-import').addEventListener('click', importClassical);
+    $('#form-mins').addEventListener('change', function (e) {
+      var f = e.target.dataset.form;
+      if (!f) return;
+      var v = Math.max(1, Math.min(300, +e.target.value || 0));
+      state.settings.formMinutes[f] = v;
+      e.target.value = v;
+      save();
+      // A day already drawn keeps the numbers it drew with.
+      toast(f + ' now estimated at ' + v + ' minutes.');
     });
   }
 
@@ -4093,6 +4205,35 @@
 
   /* ──────────────────────────── shell ──────────────────────────── */
 
+  function renderDeckSwitch() {
+    var box = $('#deck-switch');
+    if (!box) return;
+    box.querySelectorAll('.deck').forEach(function (b) {
+      var on = b.dataset.deck === state.mode;
+      b.classList.toggle('is-on', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    document.body.dataset.deck = state.mode;
+  }
+
+  // Switching changes what every view is looking at, so the app is redrawn
+  // rather than patched. The genre filter and the selection belong to the deck
+  // that made them and would otherwise hide or act on the wrong records.
+  function switchDeck(to) {
+    if (to === state.mode || !state.decks[to]) return;
+    state.mode = to;
+    genreFilter = '';
+    libLimit = LIB_LIMIT;
+    selected = {};
+    editingId = null;
+    save();
+    renderDeckSwitch();
+    render();
+    var view = document.body.dataset.view || 'today';
+    if (view === 'library') renderRows();
+    else if (view === 'played') renderPlayed();
+  }
+
   function applyTheme() {
     document.documentElement.dataset.theme = state.settings.theme;
   }
@@ -4128,6 +4269,7 @@
   }
 
   function render() {
+    renderDeckSwitch();
     renderToday();
     renderLibrary();
     renderPlayed();
@@ -4155,6 +4297,10 @@
       if (document.body.dataset.view === 'played') renderPlayed();
       else renderRows();
     });
+    $('#deck-switch').addEventListener('click', function (e) {
+      var b = e.target.closest('.deck');
+      if (b) switchDeck(b.dataset.deck);
+    });
     $('#sidebar-toggle').addEventListener('click', function () {
       state.settings.sidebarCollapsed = !state.settings.sidebarCollapsed;
       applySidebar();
@@ -4176,6 +4322,7 @@
     wireBulk();
     wireNeon();
     wirePlaylist();
+    wireClassical();
 
     render();
     save();
