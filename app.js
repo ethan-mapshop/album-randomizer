@@ -32,7 +32,14 @@
       deletedGenres: [],
       rotation: 0,
       session: null,
-      spotify: { clientId: '', clientSecret: '', token: null, tokenExp: 0 },
+      // The catalogue credential and the account link sit side by side: the
+      // first only reads album data, the second is the only thing allowed to
+      // write a playlist. Neither ever leaves this device.
+      spotify: {
+        clientId: '', clientSecret: '', token: null, tokenExp: 0,
+        userToken: null, userExp: 0, refresh: null, scopes: '',
+        playlistId: '', playlistName: '01. Today'
+      },
       // Never included in the synced file: it is this device's key to it.
       sync: {
         owner: '', repo: '', branch: 'main', path: 'library.json',
@@ -808,6 +815,406 @@
   }
 
 
+  /* ───────────────────── spotify account (PKCE) ─────────────────────
+   * Writing a playlist is something only the account holder may do, and the
+   * client-credentials token used for the catalogue carries no user identity
+   * at all. So this is a second, separate credential living alongside it:
+   * lookups keep using the app token, and only playlist calls use this one.
+   *
+   * PKCE involves no secret. The browser proves it is the same one that began
+   * the sign-in by holding a random verifier back until the code is redeemed.
+   */
+
+  var PL_SCOPES = 'playlist-read-private playlist-modify-private playlist-modify-public';
+  var PKCE_KEY = 'albumRandomizer.pkce';
+  var PL_CHUNK = 100;           // the tracks endpoint takes 100 uris per call
+  var playlistBusy = false;
+
+  // Has to match a redirect URI registered on the Spotify app character for
+  // character. Query and hash are dropped: Spotify refuses a URI with either,
+  // and the app keeps its current view in the hash.
+  function redirectUri() {
+    return location.origin + location.pathname;
+  }
+
+  function spLinked() {
+    return !!(state.spotify.clientId && state.spotify.refresh);
+  }
+
+  function b64url(buf) {
+    var bytes = new Uint8Array(buf), s = '';
+    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  // Drawn from the unreserved set the spec allows, so it needs no escaping
+  // anywhere it travels.
+  function randomToken(len) {
+    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+    var bytes = new Uint8Array(len), out = '';
+    crypto.getRandomValues(bytes);
+    for (var i = 0; i < len; i++) out += chars.charAt(bytes[i] % chars.length);
+    return out;
+  }
+
+  function beginSpotifyLogin() {
+    if (!state.spotify.clientId) { toast('Add your Spotify client ID first.'); return; }
+    // SHA-256 is only offered in a secure context, and a redirect URI has to be
+    // https or a loopback address anyway, so a file:// page can never do this.
+    if (!window.isSecureContext || !crypto.subtle) {
+      toast('Signing in needs https or 127.0.0.1 — a file:// page cannot.');
+      return;
+    }
+    var verifier = randomToken(64);
+    var guard = randomToken(24);
+    try {
+      sessionStorage.setItem(PKCE_KEY, JSON.stringify({ v: verifier, s: guard }));
+    } catch (e) {
+      toast('Sign-in needs session storage, which this browser has blocked.');
+      return;
+    }
+    crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)).then(function (digest) {
+      location.assign('https://accounts.spotify.com/authorize?' + new URLSearchParams({
+        client_id: state.spotify.clientId,
+        response_type: 'code',
+        redirect_uri: redirectUri(),
+        code_challenge_method: 'S256',
+        code_challenge: b64url(digest),
+        state: guard,
+        scope: PL_SCOPES
+      }).toString());
+    }, function (err) {
+      toast('Could not start sign-in: ' + err.message);
+    });
+  }
+
+  // Spotify sends the outcome back as query parameters on the app's own URL.
+  // The code is single-use, so the address bar is cleaned before anything can
+  // reload and try to redeem it twice.
+  function finishSpotifyLogin() {
+    var q = new URLSearchParams(location.search);
+    var code = q.get('code'), refused = q.get('error'), guard = q.get('state');
+    if (!code && !refused) return Promise.resolve(false);
+
+    try { history.replaceState(null, '', redirectUri() + (location.hash || '')); }
+    catch (e) { /* cosmetic only */ }
+
+    var stash = null;
+    try { stash = JSON.parse(sessionStorage.getItem(PKCE_KEY) || 'null'); } catch (e) { /* gone */ }
+    try { sessionStorage.removeItem(PKCE_KEY); } catch (e) { /* ignore */ }
+
+    if (refused) {
+      toast(refused === 'access_denied'
+        ? 'Sign-in was declined.'
+        : 'Spotify refused the sign-in: ' + refused);
+      return Promise.resolve(false);
+    }
+    // Either this tab never started a sign-in, or the reply belongs to another
+    // one. Redeeming it anyway is the hole the state parameter exists to close.
+    if (!stash || stash.s !== guard) {
+      toast('That sign-in reply did not match this tab — try connecting again.');
+      return Promise.resolve(false);
+    }
+
+    return authPost({
+      grant_type: 'authorization_code',
+      code: code,
+      redirect_uri: redirectUri(),
+      client_id: state.spotify.clientId,
+      code_verifier: stash.v
+    }).then(function (j) {
+      keepUserToken(j);
+      toast('Spotify account connected.');
+      return true;
+    }, function (err) {
+      toast('Could not finish sign-in: ' + err.message);
+      return false;
+    });
+  }
+
+  function authPost(fields) {
+    return fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(fields).toString()
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) {
+          throw new Error(j.error_description || j.error || ('token request failed (' + r.status + ')'));
+        }
+        return j;
+      }, function () {
+        throw new Error('Spotify sent back something unreadable (' + r.status + ').');
+      });
+    });
+  }
+
+  function keepUserToken(j) {
+    var sp = state.spotify;
+    sp.userToken = j.access_token;
+    sp.userExp = Date.now() + ((j.expires_in || 3600) * 1000);
+    // PKCE usually rotates the refresh token; the old one keeps working only
+    // when Spotify chose not to issue a replacement.
+    if (j.refresh_token) sp.refresh = j.refresh_token;
+    if (j.scope) sp.scopes = j.scope;
+    save();
+  }
+
+  function spUserToken() {
+    var sp = state.spotify;
+    if (sp.userToken && sp.userExp > Date.now() + 30000) return Promise.resolve(sp.userToken);
+    if (!sp.refresh) return Promise.reject(new Error('Spotify account is not connected.'));
+    return authPost({
+      grant_type: 'refresh_token',
+      refresh_token: sp.refresh,
+      client_id: sp.clientId
+    }).then(function (j) {
+      keepUserToken(j);
+      return sp.userToken;
+    }, function (err) {
+      // A refresh token is only refused for good: revoked, or the app's scopes
+      // changed under it. Dropping it is what makes the UI ask to reconnect,
+      // rather than failing the same way on every attempt from here on.
+      sp.refresh = null; sp.userToken = null; sp.userExp = 0;
+      save();
+      renderPlaylistStatus();
+      throw new Error('Sign-in expired — connect the account again (' + err.message + ')');
+    });
+  }
+
+  // Same pacing, retry and rate-limit discipline as the catalogue calls, but on
+  // the user token and able to carry a body.
+  function spUser(method, path, body, attempt) {
+    attempt = attempt || 0;
+
+    function again(wait) {
+      return sleep(wait).then(function () { return spUser(method, path, body, attempt + 1); });
+    }
+
+    return throttle().then(spUserToken).then(function (tok) {
+      var opts = { method: method, headers: { Authorization: 'Bearer ' + tok } };
+      if (body !== undefined) {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(body);
+      }
+      return fetch('https://api.spotify.com/v1' + path, opts).then(function (r) {
+        if (r.status === 401 && attempt < MAX_ATTEMPTS) {
+          state.spotify.userExp = 0;      // force a refresh, then try once more
+          return again(0);
+        }
+        if (r.status === 429) {
+          slowDown();
+          if (attempt >= RATE_WAITS.length) throw new Error('RATE_LIMIT');
+          return again(RATE_WAITS[attempt]);
+        }
+        if (RETRY_STATUS[r.status] && attempt < MAX_ATTEMPTS) return again(backoff(attempt));
+        if (!r.ok) {
+          return r.text().then(function (text) {
+            var detail = '';
+            try {
+              var j = JSON.parse(text);
+              detail = (j.error && (j.error.message || j.error)) || '';
+            } catch (ignored) {
+              detail = text.slice(0, 140);
+            }
+            console.warn('[album-randomizer] ' + r.status + ' ' + method + ' ' + path, text.slice(0, 400));
+            throw new Error('Spotify ' + r.status + (detail ? ': ' + detail : ''));
+          });
+        }
+        if (r.status === 204) return null;
+        return r.text().then(function (t) { return t ? JSON.parse(t) : null; });
+      }, function (netErr) {
+        if (attempt < MAX_ATTEMPTS) return again(backoff(attempt));
+        throw new Error('Could not reach Spotify: ' + (netErr.message || netErr));
+      });
+    });
+  }
+
+  function parsePlaylistId(raw) {
+    var t = String(raw == null ? '' : raw).trim();
+    if (!t) return null;
+    var m = t.match(/playlist[:\/]([A-Za-z0-9]{22})/);
+    if (m) return m[1];
+    return /^[A-Za-z0-9]{22}$/.test(t) ? t : null;
+  }
+
+  // Walks the account's own playlists for one by that exact name. Matched once
+  // and then remembered by id, so renaming it later does not quietly start
+  // filling a different list.
+  function findPlaylist(name) {
+    var want = String(name).trim().toLowerCase();
+    function page(offset) {
+      return spUser('GET', '/me/playlists?limit=50&offset=' + offset).then(function (j) {
+        var items = (j && j.items) || [];
+        for (var i = 0; i < items.length; i++) {
+          if (items[i] && String(items[i].name).trim().toLowerCase() === want) return items[i];
+        }
+        if (items.length && j && j.next) return page(offset + items.length);
+        return null;
+      });
+    }
+    return page(0);
+  }
+
+  // The library's track count is the edited one: trimmed by hand wherever a
+  // reissue padded the release with remixes, demos and bonus cuts. Taking that
+  // many from the front is the same rule the spreadsheet always used.
+  function albumUris(album) {
+    var uris = [];
+    function page(offset) {
+      return spGet('/albums/' + album.spotifyId + '/tracks?limit=50&offset=' + offset).then(function (j) {
+        var items = (j && j.items) || [];
+        items.forEach(function (t) { if (t && t.uri) uris.push(t.uri); });
+        var total = (j && j.total) || uris.length;
+        if (items.length && uris.length < total) return page(offset + items.length);
+        return uris;
+      });
+    }
+    return page(0).then(function (all) {
+      var keep = album.tracks > 0 ? Math.min(album.tracks, all.length) : all.length;
+      return { uris: all.slice(0, keep), found: all.length, kept: keep };
+    });
+  }
+
+  // Replaces the playlist outright. The first write is a PUT, which Spotify
+  // reads as "these are now the contents" — so clearing and filling happen in
+  // one call rather than leaving an empty list behind if a later one fails.
+  async function writePlaylist(onStep) {
+    var s = state.session;
+    var picked = s ? s.slots.filter(function (x) { return x.added && x.albumId; }) : [];
+    if (!picked.length) throw new Error('Nothing is marked as added yet.');
+
+    var target = state.spotify.playlistId;
+    if (!target) {
+      onStep('Looking for “' + state.spotify.playlistName + '”…');
+      var found = await findPlaylist(state.spotify.playlistName);
+      if (!found) {
+        throw new Error('No playlist called “' + state.spotify.playlistName +
+          '”. Check the name in Settings, or paste its link there.');
+      }
+      target = found.id;
+      state.spotify.playlistId = target;
+      save();
+    }
+
+    var uris = [], skipped = [], trimmed = 0, albums = 0;
+    for (var i = 0; i < picked.length; i++) {
+      var a = byId(picked[i].albumId);
+      if (!a) continue;
+      if (!a.spotifyId) { skipped.push(a.name + ' (not linked)'); continue; }
+      onStep('Reading ' + (i + 1) + ' of ' + picked.length + ' — ' + a.name);
+      try {
+        var got = await albumUris(a);
+        if (!got.uris.length) { skipped.push(a.name + ' (no tracks)'); continue; }
+        if (got.kept < got.found) trimmed++;
+        uris = uris.concat(got.uris);
+        albums++;
+      } catch (e) {
+        skipped.push(a.name + ' (' + e.message + ')');
+      }
+    }
+    if (!uris.length) throw new Error('None of the picked albums could be read from Spotify.');
+
+    onStep('Replacing the playlist with ' + uris.length + ' tracks…');
+    await spUser('PUT', '/playlists/' + target + '/tracks', { uris: uris.slice(0, PL_CHUNK) });
+    for (var at = PL_CHUNK; at < uris.length; at += PL_CHUNK) {
+      onStep('Adding ' + Math.min(at + PL_CHUNK, uris.length) + ' of ' + uris.length + '…');
+      await spUser('POST', '/playlists/' + target + '/tracks', { uris: uris.slice(at, at + PL_CHUNK) });
+    }
+    return { tracks: uris.length, albums: albums, skipped: skipped, trimmed: trimmed, id: target };
+  }
+
+  // Spotify stopped accepting the name "localhost" as a redirect: a loopback
+  // redirect has to be the literal address. Serving the app at one name and
+  // registering the other fails at sign-in with nothing to explain it, so say
+  // so here rather than let it be discovered the hard way.
+  function loopbackWarning() {
+    if (location.hostname !== 'localhost') return '';
+    return 'Spotify will not accept “localhost” as a redirect — reopen this app at ' +
+      'http://127.0.0.1' + (location.port ? ':' + location.port : '') + location.pathname +
+      ' before connecting. ';
+  }
+
+  function renderPlaylistStatus() {
+    var box = $('#pl-status');
+    if (!box) return;
+    var sp = state.spotify;
+    box.textContent = loopbackWarning() + (!sp.clientId
+      ? 'Add a client ID under Album lengths first — the same one is used here.'
+      : !sp.refresh
+        ? 'Not connected. Sending a playlist needs your own authorisation, which the catalogue credential cannot give.'
+        : 'Connected' + (sp.playlistId
+            ? ' · playlist found and remembered'
+            : ' · “' + sp.playlistName + '” will be looked up on the first send') + '.');
+  }
+
+  function wirePlaylist() {
+    $('#pl-connect').addEventListener('click', beginSpotifyLogin);
+
+    $('#pl-copy-redirect').addEventListener('click', function () {
+      copyText(redirectUri(), 'Redirect URI copied — paste it into the Spotify dashboard.');
+    });
+
+    $('#pl-save').addEventListener('click', function () {
+      var name = $('#pl-name').value.trim();
+      var rawLink = $('#pl-link').value.trim();
+      var id = parsePlaylistId(rawLink);
+      if (rawLink && !id) { toast('That is not a Spotify playlist link or id.'); return; }
+
+      // A name change has to drop the remembered id, or it would keep writing
+      // to the list the old name found.
+      if (name && name !== state.spotify.playlistName) state.spotify.playlistId = '';
+      if (name) state.spotify.playlistName = name;
+      if (rawLink) state.spotify.playlistId = id;
+      else if (!name) state.spotify.playlistId = '';
+
+      save();
+      renderPlaylistStatus();
+      toast(id ? 'Playlist set by link.' : 'Playlist name saved.');
+    });
+
+    $('#pl-forget').addEventListener('click', function () {
+      state.spotify.refresh = null;
+      state.spotify.userToken = null;
+      state.spotify.userExp = 0;
+      state.spotify.scopes = '';
+      save();
+      renderPlaylistStatus();
+      renderToday();
+      toast('Account disconnected. The playlist itself is untouched.');
+    });
+
+    $('#push-playlist').addEventListener('click', function () {
+      if (playlistBusy) { toast('Already sending.'); return; }
+      if (!spLinked()) { toast('Connect your Spotify account in Settings first.'); return; }
+
+      var note = $('#pl-note');
+      var btn = $('#push-playlist');
+      playlistBusy = true;
+      btn.disabled = true;
+      note.hidden = false;
+      note.textContent = 'Starting…';
+
+      writePlaylist(function (msg) { note.textContent = msg; }).then(function (res) {
+        playlistBusy = false;
+        btn.disabled = false;
+        var bits = [res.tracks + ' tracks from ' + res.albums + ' album' + (res.albums === 1 ? '' : 's')];
+        if (res.trimmed) bits.push(res.trimmed + ' trimmed to the library count');
+        if (res.skipped.length) bits.push(res.skipped.length + ' skipped: ' + res.skipped.join(', '));
+        note.textContent = '“' + state.spotify.playlistName + '” now holds ' + bits.join(' · ') + '.';
+        toast('Playlist written — ' + res.tracks + ' tracks.');
+      }, function (err) {
+        playlistBusy = false;
+        btn.disabled = false;
+        var msg = err.message === 'RATE_LIMIT'
+          ? 'Spotify is rate-limiting this app — wait a while and try again.'
+          : err.message;
+        note.textContent = 'Stopped: ' + msg;
+        toast('Could not write the playlist.');
+      });
+    });
+  }
+
   /* ─────────────────────────── github sync ───────────────────────────
    * The library lives as one JSON file in a GitHub repo. Every device pulls it
    * on load and on focus, and pushes a debounced snapshot after changes. Writes
@@ -1275,7 +1682,10 @@
     var canAdd = anyPoolLeft(s);
     $('#add-slot').disabled = !canAdd;
     $('#tail-note').textContent = canAdd ? '' : 'Every album in the library has been played.';
-    $('#finish-day').disabled = !s.slots.some(function (x) { return x.added; });
+    var anyAdded = s.slots.some(function (x) { return x.added; });
+    $('#finish-day').disabled = !anyAdded;
+    // Sending needs both something to send and an account allowed to send it.
+    $('#push-playlist').disabled = !anyAdded || playlistBusy || !spLinked();
   }
 
   function anyPoolLeft(session) {
@@ -1435,7 +1845,9 @@
         save();
         refreshSlot(slot);
         renderMeter();
-        $('#finish-day').disabled = !state.session.slots.some(function (x) { return x.added; });
+        var live = state.session.slots.some(function (x) { return x.added; });
+        $('#finish-day').disabled = !live;
+        $('#push-playlist').disabled = !live || playlistBusy || !spLinked();
       } else if (act === 'reroll') {
         // usedIds already excludes this slot's own album, so a reroll never
         // hands back the same record.
@@ -2672,6 +3084,12 @@
     $('#sp-secret').value = state.spotify.clientSecret;
     renderSpotifyStatus();
 
+    $('#pl-name').value = state.spotify.playlistName || '';
+    $('#pl-link').value = state.spotify.playlistId
+      ? 'https://open.spotify.com/playlist/' + state.spotify.playlistId : '';
+    $('#pl-redirect').value = redirectUri();
+    renderPlaylistStatus();
+
     var sel = $('#set-rotation');
     sel.innerHTML = state.genres.map(function (g, i) {
       return '<option value="' + i + '"' + (i === state.rotation ? ' selected' : '') + '>' + esc(g) + '</option>';
@@ -2937,11 +3355,19 @@
     });
 
     $('#sp-clear').addEventListener('click', function () {
-      state.spotify = { clientId: '', clientSecret: '', token: null, tokenExp: 0 };
+      // The account link is useless without the client id it was issued to,
+      // so it goes too. Only the playlist name is worth keeping.
+      state.spotify = {
+        clientId: '', clientSecret: '', token: null, tokenExp: 0,
+        userToken: null, userExp: 0, refresh: null, scopes: '',
+        playlistId: '', playlistName: state.spotify.playlistName || '01. Today'
+      };
       save();
       $('#sp-id').value = '';
       $('#sp-secret').value = '';
       renderSpotifyStatus();
+      renderPlaylistStatus();
+      renderToday();
       toast('Credentials removed.');
     });
 
@@ -3406,9 +3832,16 @@
     wireGenreOrder();
     wireBulk();
     wireSync();
+    wirePlaylist();
 
     render();
     save();
+
+    // A sign-in comes back as a redirect to this same page, so its reply is
+    // already sitting in the address bar by the time the app loads.
+    finishSpotifyLogin().then(function (linked) {
+      if (linked) { renderPlaylistStatus(); renderToday(); }
+    });
 
     // Pull straight away so a device that has been away starts current.
     if (syncConfigured()) syncPull(true);

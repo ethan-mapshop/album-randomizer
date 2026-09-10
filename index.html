@@ -47,6 +47,7 @@
       </div>
       <div class="day-actions">
         <button class="btn btn-primary" id="finish-day">Finish day</button>
+        <button class="btn" id="push-playlist">Send to Spotify</button>
         <button class="btn" id="copy-day">Copy list</button>
         <button class="btn btn-quiet" id="reset-day">Start over</button>
       </div>
@@ -65,6 +66,7 @@
     </div>
 
     <p class="hint">Original tracklists only — skip the remixes, demos and bonus cuts on deluxe / special editions.</p>
+    <p class="hint" id="pl-note" hidden></p>
 
     <div class="slots" id="slots"></div>
 
@@ -271,6 +273,37 @@
           <p class="dim" id="sp-log"></p>
         </div>
       </div>
+    </div>
+
+    <div class="panel">
+      <h3>Today &rarr; Spotify playlist</h3>
+      <p class="dim">Replaces a playlist with the albums you marked as added, in the day&rsquo;s order,
+        taking only as many tracks from each as the library says &mdash; so a reissue&rsquo;s remixes and
+        demos stay off it. It uses the same client ID, but needs your own authorisation, which a
+        catalogue credential cannot give.</p>
+      <label class="field">
+        <span>Playlist name</span>
+        <span class="field-input"><input type="text" id="pl-name" spellcheck="false" autocomplete="off" placeholder="01. Today"></span>
+        <small>Matched once, then remembered by id, so renaming it later changes nothing.</small>
+      </label>
+      <label class="field">
+        <span>Or paste its link</span>
+        <span class="field-input"><input type="text" id="pl-link" spellcheck="false" autocomplete="off" placeholder="https://open.spotify.com/playlist/…"></span>
+        <small>Only needed if two playlists share the name, or the search cannot see it.</small>
+      </label>
+      <label class="field">
+        <span>Redirect URI</span>
+        <span class="field-input"><input type="text" id="pl-redirect" readonly spellcheck="false"></span>
+        <small>Add this to your Spotify app under <b>Settings &rarr; Redirect URIs</b>, exactly as shown.
+          Every address you open the app at needs its own entry.</small>
+      </label>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="pl-connect">Connect Spotify account</button>
+        <button class="btn" id="pl-save">Save playlist</button>
+        <button class="btn btn-quiet" id="pl-copy-redirect">Copy redirect URI</button>
+        <button class="btn btn-quiet" id="pl-forget">Disconnect</button>
+      </div>
+      <p class="sp-status" id="pl-status"></p>
     </div>
 
     <div class="panel">
