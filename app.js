@@ -1094,6 +1094,26 @@
     });
   }
 
+  // Everything a work needs, straight from the playlist it lives in. Spotify
+  // retired /playlists/{id}/tracks along with the write, so this reads /items.
+  function playlistTracks(id) {
+    var ids = [], ms = 0;
+    function page(offset) {
+      return spUser('GET', '/playlists/' + id + '/items?limit=100&offset=' + offset)
+        .then(function (j) {
+          var items = (j && j.items) || [];
+          items.forEach(function (it) {
+            var t = it && it.track;
+            if (t && t.id) { ids.push(t.id); ms += t.duration_ms || 0; }
+          });
+          var total = (j && j.total) || ids.length;
+          if (items.length && offset + items.length < total) return page(offset + items.length);
+          return { ids: ids, ms: ms };
+        });
+    }
+    return page(0);
+  }
+
   function parsePlaylistId(raw) {
     var t = String(raw == null ? '' : raw).trim();
     if (!t) return null;
@@ -2807,9 +2827,14 @@
           ' value="' + (a.tracks || '') + '"> trk</label>') +
         '<label class="mins"><input type="number" class="edit-mins" min="1" max="300" placeholder="—" value="' +
           (a.minutes || '') + '"> min</label>' +
-        '<input type="text" class="edit-spid" spellcheck="false" placeholder="Spotify link or id"' +
-          ' title="Paste an album link or id to set the match by hand"' +
-          ' value="' + esc(a.spotifyId || '') + '">' +
+        // A classical work links to a playlist, so the box takes a playlist
+        // link and shows the one it already has.
+        '<input type="text" class="edit-spid" spellcheck="false" placeholder="' +
+          (a.mode === 'classical' ? 'Spotify playlist link or id' : 'Spotify link or id') +
+          '" title="' + (a.mode === 'classical'
+            ? 'Paste the link to the playlist holding this work'
+            : 'Paste an album link or id to set the match by hand') + '"' +
+          ' value="' + esc((a.mode === 'classical' ? a.playlistId : a.spotifyId) || '') + '">' +
         '<button class="btn btn-primary" type="submit">Save</button>' +
         '<button class="btn btn-quiet" type="button" data-act="cancel-edit">Cancel</button>' +
       '</form></div>';
@@ -3278,22 +3303,56 @@
       // searching entirely, which is the only way to settle an album the
       // matcher cannot find, such as a self-titled one under a common word.
       var rawSpid = form.querySelector('.edit-spid').value.trim();
-      var spid = parseSpotifyId(rawSpid);
-      if (rawSpid && !spid) { toast('That is not a Spotify album link or id.'); return; }
-      var linkChanged = spid !== (a.spotifyId || null);
+      var cl = a.mode === 'classical';
+      // A work is linked by playlist, an album by album — so the same box
+      // parses whichever kind of link belongs to this deck.
+      var spid = cl ? parsePlaylistId(rawSpid) : parseSpotifyId(rawSpid);
+      if (rawSpid && !spid) {
+        toast(cl ? 'That is not a Spotify playlist link or id.'
+                 : 'That is not a Spotify album link or id.');
+        return;
+      }
+      var linkChanged = spid !== ((cl ? a.playlistId : a.spotifyId) || null);
       if (linkChanged) {
-        a.spotifyId = spid;
-        a.spotifyUrl = spid ? 'https://open.spotify.com/album/' + spid : null;
-        a.matchName = spid ? name : null;
-        a.match = spid ? 'manual' : null;
-        a.candidates = null;
-        a.trackIds = null;      // pointing at another release invalidates the order
+        if (cl) {
+          a.playlistId = spid;
+          // The tracks belonged to the old playlist; they are refetched below.
+          a.trackIds = null;
+        } else {
+          a.spotifyId = spid;
+          a.spotifyUrl = spid ? 'https://open.spotify.com/album/' + spid : null;
+          a.matchName = spid ? name : null;
+          a.match = spid ? 'manual' : null;
+          a.candidates = null;
+          a.trackIds = null;    // pointing at another release invalidates the order
+        }
       }
 
       editingId = null;
       save();
       render();
       toast('Saved “' + name + '”');
+
+      // A relinked work takes its tracks and its runtime from the new playlist,
+      // which is where both of them live.
+      if (linkChanged && spid && cl && spLinked()) {
+        playlistTracks(spid).then(function (got) {
+          if (!got.ids.length) { toast('That playlist is empty.'); return; }
+          a.trackIds = got.ids;
+          a.playlistName = null;   // the name no longer describes what it points at
+          // The new playlist decides the runtime. The minutes box was filled in
+          // from the old link, so treating it as a deliberate answer would keep a
+          // number that describes music this work no longer points at.
+          a.minutes = Math.max(1, Math.round(got.ms / 60000));
+          a.approx = false;
+          save();
+          render();
+          toast(name + ' · ' + got.ids.length + ' tracks · ' + fmt(a.minutes));
+        }, function (err) {
+          toast('Linked, but could not read the playlist: ' + err.message);
+        });
+        return;
+      }
 
       // Fill in what the link knows, unless a runtime was typed alongside it.
       if (linkChanged && spid && spConfigured() && !mins) {
