@@ -2798,9 +2798,13 @@
             // rather than the browser refusing it over a step mismatch.
             '<label class="numbox"><input type="number" class="edit-rym" min="0" max="5" step="any"' +
               ' placeholder="—" aria-label="RateYourMusic score" value="' + (a.rym || '') + '"> rym</label>') +
-        '<label class="numbox"><input type="number" class="edit-tracks" min="1" max="200" step="1"' +
+        // A track count exists to trim a deluxe edition down to the original
+        // running order. A classical work carries the exact tracks it needs, so
+        // there is nothing to trim.
+        (a.mode === 'classical' ? '' :
+          '<label class="numbox"><input type="number" class="edit-tracks" min="1" max="200" step="1"' +
           ' placeholder="—" aria-label="Tracks to take from the linked release"' +
-          ' value="' + (a.tracks || '') + '"> trk</label>' +
+          ' value="' + (a.tracks || '') + '"> trk</label>') +
         '<label class="mins"><input type="number" class="edit-mins" min="1" max="300" placeholder="—" value="' +
           (a.minutes || '') + '"> min</label>' +
         '<input type="text" class="edit-spid" spellcheck="false" placeholder="Spotify link or id"' +
@@ -2833,8 +2837,27 @@
       '</details>';
   }
 
+  // Search folds both sides the same way: accents off, punctuation gone. Typing
+  // "dvorak" has to find Dvořák, and "lestro" L'estro armonico — nobody is
+  // reaching for a caron to look something up in their own library.
+  // Kept beside the library rather than on the records: anything written onto a
+  // record ends up in local storage and in every sync payload.
+  var foldCache = {};
+  function searchFold(s) {
+    return String(s == null ? '' : s).normalize('NFKD')
+      .replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  }
+  // One folded name per record, redone only when that record is renamed.
+  function foldedName(a) {
+    var hit = foldCache[a.id];
+    if (hit && hit.name === a.name) return hit.folded;
+    var folded = searchFold(a.name);
+    foldCache[a.id] = { name: a.name, folded: folded };
+    return folded;
+  }
+
   function currentMatches() {
-    var q = $('#lib-search').value.trim().toLowerCase();
+    var q = searchFold($('#lib-search').value);
     var genre = genreFilter;
     var status = $('#lib-status').value;
     var band = $('#lib-rym').value ? RYM_BANDS[+$('#lib-rym').value - 1] : null;
@@ -2854,7 +2877,7 @@
       if (status === 'nolength' && a.minutes) return false;
       if (status === 'noyear' && a.year) return false;
       if (status === 'norym' && a.rym) return false;
-      return !q || a.name.toLowerCase().indexOf(q) > -1;
+      return !q || foldedName(a).indexOf(q) > -1;
     });
     matches.sort(byArtistThenYear);
     return matches;
@@ -3243,7 +3266,8 @@
         a.year = parseYear(form.querySelector('.edit-year').value);
         a.rym = parseRym(form.querySelector('.edit-rym').value);
       }
-      a.tracks = parseTracks(form.querySelector('.edit-tracks').value);
+      var trkBox = form.querySelector('.edit-tracks');
+      if (trkBox) a.tracks = parseTracks(trkBox.value);
       var mins = parseMinutes(form.querySelector('.edit-mins').value);
       a.minutes = mins;
       // A runtime you typed is authoritative; clearing it re-opens the album

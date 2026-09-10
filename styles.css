@@ -976,7 +976,8 @@ body[data-sidebar="collapsed"] .sidebar { display: none; }
 .row-form.is-blank { color: var(--text-faint); }
 body[data-deck="classical"] .row-form { display: block; }
 body[data-deck="classical"] .row-year,
-body[data-deck="classical"] .row-rym { display: none; }
+body[data-deck="classical"] .row-rym,
+body[data-deck="classical"] .row-tracks { display: none; }
 
 /* The filters and the add form lose the same two fields with them. */
 body[data-deck="classical"] #lib-decade,
