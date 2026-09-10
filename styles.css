@@ -965,7 +965,15 @@ body[data-sidebar="collapsed"] .sidebar { display: none; }
   width: var(--col-form); min-width: 0; text-align: center;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.row-form { display: none; }
+/* The same weight as every other cell on the row. Without this it inherits the
+   row size and reads as a heading dropped into the middle of the table. */
+.row-form {
+  display: none;
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.row-form.is-blank { color: var(--text-faint); }
 body[data-deck="classical"] .row-form { display: block; }
 body[data-deck="classical"] .row-year,
 body[data-deck="classical"] .row-rym { display: none; }
@@ -977,7 +985,7 @@ body[data-deck="classical"] #lib-status option[value="noyear"],
 body[data-deck="classical"] #lib-status option[value="norym"],
 body[data-deck="classical"] .add-form .numbox-year,
 body[data-deck="classical"] .add-form .numbox-rym { display: none; }
-body:not([data-deck="classical"]) .add-form .form-pick { display: none; }
+body:not([data-deck="classical"]) .form-pick { display: none; }
 
 /* At the stacked breakpoint the columns reflow rather than disappear, so Form
    goes with its neighbours. */

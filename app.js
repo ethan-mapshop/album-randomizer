@@ -2480,7 +2480,7 @@
     // the value is written from that rather than kept independently. It earns
     // its place because the sidebar can be collapsed away entirely.
     var gsel = $('#lib-genre');
-    var fsel = $('#add-form');
+    var fsel = $('#add-form-pick');
     if (fsel) {
       fsel.innerHTML = Object.keys(state.settings.formMinutes || {}).sort().map(function (f) {
         return '<option value="' + esc(f) + '">' + esc(f) + '</option>';
@@ -3331,7 +3331,7 @@
         minutes: mins, approx: false,
         played: false, playedAt: null, custom: true,
         mode: cl ? 'classical' : null,
-        form: cl ? ($('#add-form').value || null) : null,
+        form: cl ? ($('#add-form-pick').value || null) : null,
         year: cl ? null : parseYear($('#add-year').value),
         rym: cl ? null : parseRym($('#add-rym').value)
       });
