@@ -661,6 +661,7 @@
   // the field stays editable and a year already on the album is never replaced.
   function applyMatch(album, item, info) {
     album.minutes = Math.round(info.ms / 60000);
+    album.trackIds = null;      // a different release, so a different running order
     album.approx = !!info.approx;
     album.spotifyId = item.id;
     // The search result already carries a usable album link; the details call
@@ -1060,10 +1061,33 @@
     return page(0);
   }
 
+  // A release's running order never changes, so it is worth keeping. Bare ids
+  // rather than full uris: the prefix is the same 15 characters every time, and
+  // this sits in the library alongside three thousand other albums.
+  //
+  // Deliberately not synced — packAlbum leaves it out. It is derived data that
+  // any device can rebuild, and it is not worth the size on every push.
+  var TRACK_PREFIX = 'spotify:track:';
+
+  function cachedUris(album) {
+    if (!album.trackIds || !album.trackIds.length) return null;
+    return album.trackIds.map(function (id) { return TRACK_PREFIX + id; });
+  }
+
   // The library's track count is the edited one: trimmed by hand wherever a
   // reissue padded the release with remixes, demos and bonus cuts. Taking that
-  // many from the front is the same rule the spreadsheet always used.
+  // many from the front is the same rule the spreadsheet always used. The whole
+  // release is cached, not the trimmed part, so raising the count later needs
+  // no further calls.
   function albumUris(album) {
+    function trim(all, cached) {
+      var keep = album.tracks > 0 ? Math.min(album.tracks, all.length) : all.length;
+      return { uris: all.slice(0, keep), found: all.length, kept: keep, cached: !!cached };
+    }
+
+    var have = cachedUris(album);
+    if (have) return Promise.resolve(trim(have, true));
+
     var uris = [];
     function page(offset) {
       return spGet('/albums/' + album.spotifyId + '/tracks?limit=50&offset=' + offset).then(function (j) {
@@ -1075,8 +1099,16 @@
       });
     }
     return page(0).then(function (all) {
-      var keep = album.tracks > 0 ? Math.min(album.tracks, all.length) : all.length;
-      return { uris: all.slice(0, keep), found: all.length, kept: keep };
+      // Only a whole, well-formed tracklist is worth remembering: a partial one
+      // would quietly serve a short album for ever.
+      var ids = all.map(function (u) {
+        return u.indexOf(TRACK_PREFIX) === 0 ? u.slice(TRACK_PREFIX.length) : null;
+      });
+      if (all.length && ids.every(Boolean)) {
+        album.trackIds = ids;
+        save();
+      }
+      return trim(all, false);
     });
   }
 
@@ -1101,7 +1133,7 @@
       save();
     }
 
-    var uris = [], skipped = [], trimmed = 0, albums = 0;
+    var uris = [], skipped = [], trimmed = 0, albums = 0, cached = 0;
     for (var i = 0; i < picked.length; i++) {
       var a = byId(picked[i].albumId);
       if (!a) continue;
@@ -1111,6 +1143,7 @@
         var got = await albumUris(a);
         if (!got.uris.length) { skipped.push(a.name + ' (no tracks)'); continue; }
         if (got.kept < got.found) trimmed++;
+        if (got.cached) cached++;
         uris = uris.concat(got.uris);
         albums++;
       } catch (e) {
@@ -1125,7 +1158,8 @@
       onStep('Adding ' + Math.min(at + PL_CHUNK, uris.length) + ' of ' + uris.length + '…');
       await spUser('POST', '/playlists/' + target + '/tracks', { uris: uris.slice(at, at + PL_CHUNK) });
     }
-    return { tracks: uris.length, albums: albums, skipped: skipped, trimmed: trimmed, id: target };
+    return { tracks: uris.length, albums: albums, skipped: skipped, trimmed: trimmed,
+             cached: cached, id: target };
   }
 
   // Spotify stopped accepting the name "localhost" as a redirect: a loopback
@@ -1203,6 +1237,7 @@
         playlistBusy = false;
         btn.disabled = false;
         var bits = [res.tracks + ' tracks from ' + res.albums + ' album' + (res.albums === 1 ? '' : 's')];
+        if (res.cached) bits.push(res.cached + ' read from cache, no calls used');
         if (res.trimmed) bits.push(res.trimmed + ' trimmed to the library count');
         if (res.skipped.length) bits.push(res.skipped.length + ' skipped: ' + res.skipped.join(', '));
         note.textContent = '“' + state.spotify.playlistName + '” now holds ' + bits.join(' · ') + '.';
@@ -2731,6 +2766,7 @@
         a.matchName = spid ? name : null;
         a.match = spid ? 'manual' : null;
         a.candidates = null;
+        a.trackIds = null;      // pointing at another release invalidates the order
       }
 
       editingId = null;
