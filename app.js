@@ -2484,6 +2484,8 @@
     var noun = isClassical() ? ' works · ' : ' albums · ';
     var head = $('#rh-genre');
     if (head) head.textContent = isClassical() ? 'Period' : 'Genre';
+    var sid = $('#rh-spid');
+    if (sid) sid.textContent = isClassical() ? 'Playlist' : 'Spotify ID';
     var side = $('#side-head');
     if (side) side.textContent = isClassical() ? 'Periods' : 'Genres';
     $('#library-summary').textContent = lib.length + noun + (lib.length - played) +
@@ -2745,6 +2747,18 @@
   }
 
   // Rows are sorted "Artist - Album", so they read that way too.
+  // The id this record is linked by: an album for the album deck, the playlist
+  // the work already lived in for the classical one.
+  function spidCell(a) {
+    var cl = a.mode === 'classical';
+    var id = cl ? a.playlistId : a.spotifyId;
+    var tip = id
+      ? (cl ? (a.playlistName || a.name) : (a.matchName || a.name))
+      : (cl ? 'No playlist linked yet' : 'Not linked to Spotify yet');
+    return '<span class="row-spid' + (id ? '' : ' is-blank') + '" title="' + esc(tip) + '">' +
+      (id ? esc(id) : '—') + '</span>';
+  }
+
   function rowName(a) {
     if (!a.artist) return esc(a.name);
     return '<small>' + esc(a.artist) + ' ·</small> ' + esc(a.title);
@@ -2914,9 +2928,9 @@
           '<span class="row-tracks' + (a.tracks ? '' : ' is-blank') + '"' +
             ' title="Tracks to take from the linked release — trim it to drop the' +
             ' bonus cuts on a deluxe edition">' + (a.tracks || '—') + '</span>' +
-          '<span class="row-spid' + (a.spotifyId ? '' : ' is-blank') + '" title="' +
-            (a.spotifyId ? esc(a.matchName || a.name) : 'Not linked to Spotify yet') + '">' +
-            (a.spotifyId ? esc(a.spotifyId) : '—') + '</span>' +
+          // A classical work is linked to a playlist, not an album, so the column
+          // shows whichever one this record actually has.
+          spidCell(a) +
           '<span class="row-tools">' +
             '<button type="button" data-act="fav" class="' + (a.fav ? 'on' : '') +
               '" title="Toggle favorite">' + (a.fav ? '★' : '☆') + '</button>' +
