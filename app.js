@@ -833,8 +833,12 @@
   // Has to match a redirect URI registered on the Spotify app character for
   // character. Query and hash are dropped: Spotify refuses a URI with either,
   // and the app keeps its current view in the hash.
+  //
+  // A trailing index.html goes too. GitHub Pages serves the same page at both
+  // the directory and the file, and registering one address then arriving at
+  // the other fails the sign-in with nothing on screen to explain it.
   function redirectUri() {
-    return location.origin + location.pathname;
+    return location.origin + location.pathname.replace(/index\.html?$/i, '');
   }
 
   function spLinked() {
