@@ -325,12 +325,12 @@
   }
 
   var toastTimer = null;
-  function toast(msg) {
+  function toast(msg, ms) {
     var t = $('#toast');
     t.textContent = msg;
     t.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.hidden = true; }, 2600);
+    toastTimer = setTimeout(function () { t.hidden = true; }, ms || 2600);
   }
 
   function copyText(text, okMsg) {
@@ -1198,7 +1198,13 @@
     var s = deck().session;
     var picked = s ? s.slots.filter(function (x) { return x.added && x.albumId; }) : [];
     if (!picked.length) throw new Error('Nothing is marked as added yet.');
+    return writeRecordsToPlaylist(
+      picked.map(function (x) { return byId(x.albumId); }).filter(Boolean), onStep);
+  }
 
+  // Whatever records it is handed, in the order it is handed them. The day and
+  // a hand-picked selection differ only in how that list was chosen.
+  async function writeRecordsToPlaylist(records, onStep) {
     var target = state.spotify.playlistId;
     if (!target) {
       onStep('Looking for “' + state.spotify.playlistName + '”…');
@@ -1213,15 +1219,15 @@
     }
 
     var uris = [], skipped = [], trimmed = 0, albums = 0, cached = 0;
-    for (var i = 0; i < picked.length; i++) {
-      var a = byId(picked[i].albumId);
+    for (var i = 0; i < records.length; i++) {
+      var a = records[i];
       if (!a) continue;
       // What matters is whether the tracks can be got at, not whether an album
       // is linked. A classical work never has one: it arrived carrying its own
       // track ids, which is the thing the write actually needs.
       var haveTracks = a.trackIds && a.trackIds.length;
       if (!haveTracks && !a.spotifyId) { skipped.push(a.name + ' (not linked)'); continue; }
-      onStep('Reading ' + (i + 1) + ' of ' + picked.length + ' — ' + a.name);
+      onStep('Reading ' + (i + 1) + ' of ' + records.length + ' — ' + a.name);
       try {
         var got = await albumUris(a);
         if (!got.uris.length) { skipped.push(a.name + ' (no tracks)'); continue; }
@@ -1258,6 +1264,59 @@
     return 'Spotify will not accept “localhost” as a redirect — reopen this app at ' +
       'http://127.0.0.1' + (location.port ? ':' + location.port : '') + location.pathname +
       ' before connecting. ';
+  }
+
+  // A discography, or any hand-picked set: whatever is ticked, in the order the
+  // library lists it — artist, then the year entered by hand, undated last.
+  // Nothing is marked played. This is a different kind of listening from the
+  // rotation and must never decide what the rotation draws next.
+  var SEND_ASK_OVER = 25;       // records; above this, confirm before replacing
+  var SEND_LOOKUP_CAP = 150;    // uncached tracklists one send may ask Spotify for
+
+  function sendSelection() {
+    if (playlistBusy) { toast('Already sending.'); return; }
+    if (!spLinked()) { toast('Connect your Spotify account in Settings first.'); return; }
+    var records = selectedIds().map(byId).filter(function (a) { return a && inMode(a); });
+    if (!records.length) return;
+    records.sort(byArtistThenYear);
+
+    // Select all with no filter is 3,000 albums. Every one without a cached
+    // tracklist is a call, and a few hundred in a row is what locked the app
+    // out for a day, so a send that large is refused rather than attempted.
+    var lookups = records.filter(function (a) {
+      return !(a.trackIds && a.trackIds.length) && a.spotifyId;
+    }).length;
+    if (lookups > SEND_LOOKUP_CAP) {
+      toast(lookups + ' of these still need their tracklists fetched — more than one send ' +
+        'should ask of Spotify. Narrow the selection.', 7000);
+      return;
+    }
+    var noun = isClassical() ? 'work' : 'album';
+    var word = records.length + ' ' + noun + (records.length === 1 ? '' : 's');
+    if (records.length > SEND_ASK_OVER &&
+        !confirm('Replace “' + state.spotify.playlistName + '” with ' + word + '?' +
+          (lookups ? '\n\n' + lookups + ' tracklists will be fetched from Spotify first.' : ''))) {
+      return;
+    }
+
+    playlistBusy = true;
+    renderBulkBar();
+    writeRecordsToPlaylist(records, function (msg) { toast(msg, 60000); }).then(function (res) {
+      playlistBusy = false;
+      renderBulkBar();
+      var bits = [res.tracks + ' tracks from ' + res.albums + ' ' + noun + (res.albums === 1 ? '' : 's')];
+      if (res.trimmed) bits.push(res.trimmed + ' trimmed to the library count');
+      if (res.skipped.length) {
+        bits.push(res.skipped.length + ' skipped: ' + res.skipped.slice(0, 3).join(', ') +
+          (res.skipped.length > 3 ? '…' : ''));
+      }
+      toast('“' + state.spotify.playlistName + '” now holds ' + bits.join(' · ') + '.', 9000);
+    }, function (err) {
+      playlistBusy = false;
+      renderBulkBar();
+      toast('Could not send: ' + (err.message === 'RATE_LIMIT'
+        ? 'Spotify is rate-limiting this app — try again later.' : err.message), 9000);
+    });
   }
 
   function renderPlaylistStatus() {
@@ -2689,7 +2748,9 @@
       if (!y.year) return -1;
       return x.year - y.year;
     }
-    return (x.title || x.name).localeCompare(y.title || y.name);
+    // Numeric, so a run of undated works reads Symphony No 5 before No 10 — the
+    // order that matters when a whole composer is sent at once.
+    return (x.title || x.name).localeCompare(y.title || y.name, undefined, { numeric: true });
   }
 
   function csvCell(v) {
@@ -2945,6 +3006,13 @@
           (n ? ' (' + n + ')' : '') + '">' + b[1] + '</button>';
       }).join('') +
       '<span class="bulk-sep"></span>' +
+      '<button class="btn" type="button" data-bulk="send"' +
+        (n && spLinked() && !playlistBusy ? '' : ' disabled') +
+        ' title="' + esc(spLinked()
+          ? 'Replace “' + state.spotify.playlistName + '” with the selection, in library order'
+          : 'Connect your Spotify account in Settings to send') + '">' +
+        (playlistBusy ? 'Sending…' : 'Send to Spotify') + '</button>' +
+      '<span class="bulk-sep"></span>' +
       '<button class="btn btn-quiet" type="button" data-bulk="clear"' + off + '>Clear</button>';
   }
 
@@ -3066,6 +3134,7 @@
   function bulkApply(action) {
     var ids = selectedIds();
     if (!ids.length) return;
+    if (action === 'send') { sendSelection(); return; }
     var albums = ids.map(byId);
     var word = ids.length + ' album' + (ids.length === 1 ? '' : 's');
 
