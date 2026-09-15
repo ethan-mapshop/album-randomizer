@@ -19,6 +19,11 @@
   <button class="icon-btn" id="theme-toggle" title="Toggle light / dark" aria-label="Toggle light or dark theme">◐</button>
 </header>
 
+<!-- Opening with a database: nothing is shown until it has answered. -->
+<div class="sync-loading" id="sync-loading" hidden>Loading your library…</div>
+<!-- Shown only when what is on screen might not match the database. -->
+<div class="sync-banner" id="sync-banner" role="status" hidden></div>
+
 <div class="shell">
   <aside class="sidebar">
     <!-- Two libraries that never mix. Switching changes what every view below

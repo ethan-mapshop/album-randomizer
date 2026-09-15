@@ -999,3 +999,26 @@ body:not([data-deck="classical"]) .form-pick { display: none; }
    box has a job on the card. Length stays: it is the one you might correct. */
 body[data-deck="classical"] .slot-nums .rym,
 body[data-deck="classical"] .slot-nums .trk { display: none; }
+
+/* ── staying level with the database ──────────────────────────────────────
+   While the database is answering, the library stays hidden rather than
+   showing a copy that might be stale. The banner floats under the top bar
+   instead of joining the page, because the library sizes itself to the
+   window and anything above it in the flow would push the table around. */
+body[data-sync="loading"] .shell { visibility: hidden; }
+.sync-loading {
+  position: fixed; left: 0; right: 0; top: var(--topbar-h); bottom: 0;
+  display: grid; place-items: center;
+  color: var(--text-dim); font-size: 15px;
+}
+.sync-banner {
+  position: fixed; z-index: 30;
+  top: calc(var(--topbar-h) + 10px); left: 50%; transform: translateX(-50%);
+  width: max-content; max-width: calc(100% - 24px);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  padding: 9px 12px 9px 16px; border-radius: 10px;
+  background: var(--bg-raised); color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--star) 60%, var(--line));
+  box-shadow: var(--shadow); font-size: 13.5px;
+}
+.sync-banner span { flex: 1 1 260px; min-width: 0; }

@@ -1902,9 +1902,89 @@
       .then(function (res) {
         var row = neonRows(res)[0];
         var there = Number((row && row.version) || 0);
-        if (there === Number(state.neon.version || 0)) return false;
+        if (there === Number(state.neon.version || 0)) {
+          // Reached, and nothing newer: this browser is current again.
+          if (syncState === 'error') {
+            syncState = 'idle';
+            syncNote = 'Up to date.';
+            renderNeonStatus();
+          }
+          return false;
+        }
         return neonPull(true);
-      }, function () { return false; });   // stay quiet: this runs unprompted
+      }, function (err) {
+        // Unprompted, so no toast, but never silent: the banner says the
+        // library on screen may be out of date.
+        syncState = 'error';
+        syncNote = describeNeonError(err);
+        renderNeonStatus();
+        return false;
+      });
+  }
+
+  // Brings this browser level with the database before the library is shown.
+  // Unsent edits go up first, so a tab closed straight after a change loses
+  // nothing; then anything newer comes down. It always resolves: a failure
+  // lands in syncState and the banner rather than being thrown.
+  var OPEN_TIMEOUT = 12000;
+
+  function syncWithDatabase() {
+    var work = (async function () {
+      var known = state.neon.hashes && Object.keys(state.neon.hashes).length;
+      // A browser that has never synced has nothing of its own to send: its
+      // whole library would read as changes and overwrite the database.
+      if (known && neonPendingCount()) {
+        var sent = await neonPush(false);
+        if (!sent) return;     // refused or unreachable; syncState says which
+      }
+      await neonPullIfNewer();
+    })();
+    var slow = new Promise(function (done) {
+      setTimeout(function () {
+        // Still waiting: show the saved copy and say so, rather than a blank
+        // page. If the answer arrives later it replaces the copy on its own.
+        if (document.body.dataset.sync === 'loading') {
+          syncState = 'error';
+          syncNote = 'The database is taking too long to answer.';
+          renderNeonStatus();
+        }
+        done();
+      }, OPEN_TIMEOUT);
+    });
+    return Promise.race([work, slow]);
+  }
+
+  // Shown only when what is on screen might not be what the database holds.
+  var bannerKind = '', bannerReason = '';
+
+  function renderSyncBanner() {
+    var box = $('#sync-banner');
+    if (!box) return;
+    // Pending, pushing and pulling keep whatever was showing, so the banner
+    // does not flicker every time an edit is sent.
+    var kind = !neonConfigured() ? ''
+      : syncState === 'conflict' ? 'conflict'
+      : syncState === 'error' ? 'offline'
+      : syncState === 'idle' ? '' : bannerKind;
+    // The reason is taken at the moment of failure. Read live, it would become
+    // "Saving…" as soon as the next edit queues, which explains nothing.
+    if (syncState === 'error') bannerReason = syncNote;
+    var reason = kind === 'offline' ? bannerReason : '';
+    if (kind === bannerKind && box.hidden === !kind && box.dataset.reason === reason) return;
+    bannerKind = kind;
+    box.dataset.reason = reason;
+    box.hidden = !kind;
+    if (kind === 'offline') {
+      box.innerHTML = '<span>Couldn’t sync with the database' +
+        (reason ? ' (' + esc(reason.replace(/\.\s*$/, '')) + ')' : '') +
+        '. What’s on screen is the copy saved in this browser and may be out of date.</span>' +
+        '<button class="btn" type="button" data-sync="retry">Try again</button>';
+    } else if (kind === 'conflict') {
+      box.innerHTML = '<span>Another device saved while this browser had changes it hadn’t sent. ' +
+        'You’re seeing this browser’s version.</span>' +
+        '<button class="btn" type="button" data-sync="load">Use the database version</button>' +
+        '<button class="btn" type="button" data-sync="keep">Keep my changes</button>';
+    }
   }
 
   function describeNeonError(err) {
@@ -1927,6 +2007,7 @@
   }
 
   function renderNeonStatus() {
+    renderSyncBanner();
     var box = $('#neon-status');
     if (!box) return;
     if (!neonConfigured()) {
@@ -4822,29 +4903,62 @@
     wirePlaylist();
     wireClassical();
 
-    render();
-    save();
-
-    // A sign-in comes back as a redirect to this same page, so its reply is
-    // already sitting in the address bar by the time the app loads.
-    finishSpotifyLogin().then(function (linked) {
-      if (linked) { renderPlaylistStatus(); renderToday(); }
+    $('#sync-banner').addEventListener('click', function (e) {
+      var b = e.target.closest('[data-sync]');
+      if (!b) return;
+      if (b.dataset.sync === 'retry') {
+        b.disabled = true;
+        syncWithDatabase().then(function () { b.disabled = false; });
+      } else if (b.dataset.sync === 'load') {
+        if (!confirm('Replace this browser’s unsent changes with the database version?')) return;
+        neonPull(false);
+      } else if (b.dataset.sync === 'keep') {
+        // Send this browser’s changes over the top, then take the result, so
+        // edits the other device made to other albums come back here too.
+        neonPush(true).then(function (ok) { if (ok) neonPull(true); });
+      }
     });
 
-    // Start current, and stay current: the phone and the desktop are rarely
-    // used in the same minute, so coming back to a tab is the moment another
-    // device is most likely to have moved on. Never while this device has
-    // something of its own still waiting — a pull replaces the library.
-    neonPullIfNewer();
-    checkSpotifyRelay();
-    window.addEventListener('focus', function () {
-      if (!neonConfigured() || syncBusy) return;
+    function showLibrary() {
+      document.body.dataset.sync = '';
+      $('#sync-loading').hidden = true;
+      render();
+      save();
+      var hash = (location.hash || '').replace('#', '');
+      show(['today', 'library', 'played', 'settings'].indexOf(hash) > -1 ? hash : 'today');
+
+      // A sign-in comes back as a redirect to this same page, so its reply is
+      // already sitting in the address bar by the time the app loads.
+      finishSpotifyLogin().then(function (linked) {
+        if (linked) { renderPlaylistStatus(); renderToday(); }
+      });
+      checkSpotifyRelay();
+    }
+
+    // With a database, the library stays hidden until it has answered, so what
+    // appears is what the database holds. Only if it cannot be reached does the
+    // copy saved in this browser appear, and the banner says so.
+    if (neonConfigured()) {
+      document.body.dataset.sync = 'loading';
+      $('#sync-loading').hidden = false;
+      syncWithDatabase().then(showLibrary, showLibrary);
+    } else {
+      showLibrary();
+    }
+
+    // Coming back to the app is when another device is most likely to have
+    // moved on, so it checks again then: the window regaining focus on a
+    // desktop, or a phone switching back to the tab. Never while this browser
+    // has something of its own still waiting, since a pull replaces the library.
+    function recheck() {
+      if (!neonConfigured() || syncBusy || document.body.dataset.sync === 'loading') return;
       if (syncState === 'pending' || neonPendingCount()) return;
       neonPullIfNewer();
+    }
+    window.addEventListener('focus', recheck);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible') recheck();
     });
-
-    var hash = (location.hash || '').replace('#', '');
-    show(['today', 'library', 'played', 'settings'].indexOf(hash) > -1 ? hash : 'today');
   }
 
   if (document.readyState === 'loading') {
