@@ -194,7 +194,7 @@
     // database is configured it is the record, and topping up from the seed
     // would quietly resurrect albums deleted on another device — or, on a
     // device that edits before its first pull lands, push them back up.
-    if (!st.neon.conn) mergeSeed(st);
+    if (!(dbUrl() || st.neon.conn)) mergeSeed(st);
     backfill(st);
     Object.keys(st.decks).forEach(function (k) {
       var d = st.decks[k];
@@ -1544,8 +1544,20 @@
   var NEON_META = ['genres', 'genreHues', 'deletedSeedIds', 'deletedGenres',
                    'rotation', 'session', 'decks', 'settings'];
 
+  // The database relay: a Cloudflare Worker holding the Neon password, so no
+  // browser ever needs it. The address is not a secret and belongs here, in
+  // the code every device loads. Blank means fall back to a connection string
+  // pasted into this browser, which is how the app worked before the relay.
+  var DB_URL = '';
+
+  // A per-browser override, for pointing a development copy at a local relay.
+  function dbUrl() {
+    try { return localStorage.getItem('albumRandomizer.dbUrl') || DB_URL; }
+    catch (e) { return DB_URL; }
+  }
+
   function neonConfigured() {
-    return !!(state.neon && state.neon.conn);
+    return !!(dbUrl() || (state.neon && state.neon.conn));
   }
 
   // The endpoint host is the part of the connection string between the
@@ -1563,6 +1575,22 @@
     try { return JSON.parse(v); } catch (e) { return v; }
   }
 
+  function readDbResponse(r) {
+    return r.text().then(function (text) {
+      var body = null;
+      try { body = JSON.parse(text); } catch (e) { /* not json */ }
+      if (!r.ok) {
+        var msg = (body && (body.message || body.error)) || text.slice(0, 200) ||
+          ('The database returned ' + r.status);
+        var err = new Error(msg);
+        err.status = r.status;
+        err.code = body && body.code;
+        throw err;
+      }
+      return body || {};
+    });
+  }
+
   function neonSql(query, params) {
     var conn = state.neon.conn;
     var host = neonHost(conn);
@@ -1575,23 +1603,30 @@
         'Neon-Raw-Text-Output': 'true'
       },
       body: JSON.stringify({ query: query, params: params || [] })
-    }).then(function (r) {
-      return r.text().then(function (text) {
-        var body = null;
-        try { body = JSON.parse(text); } catch (e) { /* not json */ }
-        if (!r.ok) {
-          var msg = (body && (body.message || body.error)) || text.slice(0, 200) ||
-            ('Neon returned ' + r.status);
-          var err = new Error(msg);
-          err.status = r.status;
-          err.code = body && body.code;
-          throw err;
-        }
-        return body || {};
-      });
-    }, function (netErr) {
+    }).then(readDbResponse, function (netErr) {
       // The CORS trap above lands here, indistinguishable from being offline.
       throw new Error('Could not reach Neon: ' + (netErr.message || netErr));
+    });
+  }
+
+  // Every database call goes through here. With the relay it names an
+  // operation and the Worker supplies the statement; without it the browser
+  // sends the statement itself using its own pasted connection string.
+  function dbCall(op, params) {
+    var relay = dbUrl();
+    if (!relay) return neonSql(DIRECT_SQL[op], params || []);
+    return fetch(relay.replace(/\/+$/, '') + '/' + op, {
+      method: 'POST',
+      // No Content-Type: plain text keeps the request CORS-simple, so the
+      // browser sends it straight away with no preflight.
+      body: JSON.stringify(params || [])
+    }).then(readDbResponse, function (netErr) {
+      throw new Error('Could not reach the database relay: ' + (netErr.message || netErr));
+    }).then(function (body) {
+      // The relay worked, so the password this browser once needed is dead
+      // weight — and the one thing worth not leaving in browser storage.
+      if (state.neon.conn) { state.neon.conn = ''; save(true); }
+      return body;
     });
   }
 
@@ -1687,7 +1722,7 @@
     var device = state.neon.device || guessDeviceName();
     var base = force ? -1 : (state.neon.version || 0);
 
-    return neonSql(NEON_PUSH_SQL, [
+    return dbCall('push', [
       JSON.stringify(diff.upserts),
       JSON.stringify(diff.deletes),
       String(base),
@@ -1733,12 +1768,24 @@
     '  (select updated_at from randomizer.state where id = true) as updated_at'
   ].join('\n');
 
+  // Mirrored in worker/album-db.js, which is what actually runs them once the
+  // relay is in use. Change one, change both.
+  var DIRECT_SQL = {
+    version: 'select version from randomizer.state where id = true',
+    test: 'select current_user as who, ' +
+          '(select count(*) from randomizer.albums) as albums, ' +
+          '(select count(*) from randomizer.meta) as meta, ' +
+          '(select version from randomizer.state where id = true) as version',
+    pull: NEON_PULL_SQL,
+    push: NEON_PUSH_SQL
+  };
+
   function neonPull(quiet) {
     if (!neonConfigured()) return Promise.resolve(false);
     syncState = 'pulling';
     renderNeonStatus();
 
-    return neonSql(NEON_PULL_SQL, []).then(function (res) {
+    return dbCall('pull').then(function (res) {
       var row = neonRows(res)[0];
       if (!row) throw new Error('Neon returned no state row — was the schema created?');
       var albums = asJson(row.albums) || [];
@@ -1786,7 +1833,7 @@
   // whether there is anything new to replace it with.
   function neonPullIfNewer() {
     if (!neonConfigured()) return Promise.resolve(false);
-    return neonSql('select version from randomizer.state where id = true', [])
+    return dbCall('version')
       .then(function (res) {
         var row = neonRows(res)[0];
         var there = Number((row && row.version) || 0);
@@ -1845,10 +1892,7 @@
       var box = $('#neon-probe');
       box.hidden = false;
       box.textContent = 'Checking…';
-      neonSql('select current_user as who, ' +
-              '(select count(*) from randomizer.albums) as albums, ' +
-              '(select count(*) from randomizer.meta) as meta, ' +
-              '(select version from randomizer.state where id = true) as version', [])
+      dbCall('test')
         .then(function (res) {
           var r = neonRows(res)[0] || {};
           box.innerHTML =
@@ -1867,8 +1911,7 @@
     // data without being told twice.
     $('#neon-upload').addEventListener('click', function () {
       if (!neonConfigured()) { toast('Paste the connection string first.'); return; }
-      neonSql('select (select count(*) from randomizer.albums) as albums, ' +
-              '(select version from randomizer.state where id = true) as version', [])
+      dbCall('test')
         .then(function (res) {
           var r = neonRows(res)[0] || {};
           var already = Number(r.albums || 0);
@@ -3769,6 +3812,19 @@
     $('#set-desktop-links').checked = !!state.settings.desktopLinks;
 
     $('#neon-conn').value = state.neon.conn;
+    // With the relay there is nothing to set up on a device, so the password
+    // field and its buttons go away rather than sitting there looking required.
+    var relayed = !!dbUrl();
+    $('#neon-conn').closest('.field').hidden = relayed;
+    $('#neon-save').hidden = relayed;
+    $('#neon-forget').hidden = relayed;
+    $('#neon-blurb').textContent = relayed
+      ? 'Keeps one library in Postgres, reachable from every device with nothing to set up. ' +
+        'The database password lives in the relay, not in this browser. Your Spotify ' +
+        'credentials and this device’s theme are left out of the database entirely.'
+      : 'Keeps one library in Postgres, reachable from every device. The connection string ' +
+        'stays on this device and never travels with the library. Your Spotify credentials ' +
+        'and this device’s theme are left out of the database entirely.';
     $('#neon-device').value = state.neon.device || guessDeviceName();
     renderNeonStatus();
 
