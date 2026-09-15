@@ -1548,7 +1548,7 @@
   // browser ever needs it. The address is not a secret and belongs here, in
   // the code every device loads. Blank means fall back to a connection string
   // pasted into this browser, which is how the app worked before the relay.
-  var DB_URL = '';
+  var DB_URL = 'https://album-db.ethan-e72.workers.dev';
 
   // A per-browser override, for pointing a development copy at a local relay.
   function dbUrl() {
