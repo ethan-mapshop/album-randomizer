@@ -423,8 +423,46 @@
     if (log) log.textContent = msg;
   }
 
+  // Whether the relay holds a working Spotify connection. Asked once on load;
+  // until the answer arrives, or if the relay has no connection yet, this
+  // browser falls back to whatever credentials it holds itself — so nothing
+  // stops working while the relay is being set up.
+  var spRelayState = null;
+
+  function spRelay() {
+    var base = dbUrl();
+    return base && spRelayState && spRelayState.connected
+      ? base.replace(/\/+$/, '') + '/spotify' : '';
+  }
+
+  function checkSpotifyRelay() {
+    var base = dbUrl();
+    if (!base) return Promise.resolve(null);
+    return fetch(base.replace(/\/+$/, '') + '/spotify/status')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (s) {
+        spRelayState = s;
+        renderSpotifyRelay();
+        renderSpotifyStatus();
+        renderPlaylistStatus();
+        renderToday();
+        renderBulkBar();
+        return s;
+      }, function () { return null; });
+  }
+
+  // Once the relay has answered a Spotify call, the secret and tokens this
+  // browser once needed are dead weight — and not worth leaving in storage.
+  function forgetLocalSpotify() {
+    var sp = state.spotify;
+    if (!(sp.clientSecret || sp.refresh || sp.token || sp.userToken)) return;
+    sp.clientSecret = ''; sp.token = null; sp.tokenExp = 0;
+    sp.userToken = null; sp.userExp = 0; sp.refresh = null; sp.scopes = '';
+    save(true);
+  }
+
   function spConfigured() {
-    return !!(state.spotify.clientId && state.spotify.clientSecret);
+    return !!(spRelay() || (state.spotify.clientId && state.spotify.clientSecret));
   }
 
   function spToken(force) {
@@ -465,10 +503,15 @@
     }
 
     return throttle().then(function () {
-      return spToken(!!forceToken);
+      return spRelay() ? null : spToken(!!forceToken);
     }).then(function (tok) {
-      return fetch(url, { headers: { Authorization: 'Bearer ' + tok } }).then(function (r) {
-        if (r.status === 401 && attempt < MAX_ATTEMPTS) return again(0, true);
+      // Through the relay there is no token here at all: it holds the
+      // connection and checks the path against what the app is allowed to read.
+      var req = tok === null
+        ? fetch(spRelay() + '/api?path=' + encodeURIComponent(path))
+        : fetch(url, { headers: { Authorization: 'Bearer ' + tok } });
+      return req.then(function (r) {
+        if (r.status === 401 && attempt < MAX_ATTEMPTS && tok !== null) return again(0, true);
 
         if (r.status === 429) {
           slowDown();
@@ -499,6 +542,7 @@
             throw new Error('Spotify ' + r.status + (detail ? ': ' + detail : ''));
           });
         }
+        if (tok === null) forgetLocalSpotify();
         return r.json();
       }, function (netErr) {
         // The request never landed — dropped connection, DNS, offline.
@@ -902,7 +946,7 @@
   }
 
   function spLinked() {
-    return !!(state.spotify.clientId && state.spotify.refresh);
+    return !!(spRelay() || (state.spotify.clientId && state.spotify.refresh));
   }
 
   function b64url(buf) {
@@ -1055,14 +1099,27 @@
       return sleep(wait).then(function () { return spUser(method, path, body, attempt + 1); });
     }
 
-    return throttle().then(spUserToken).then(function (tok) {
-      var opts = { method: method, headers: { Authorization: 'Bearer ' + tok } };
-      if (body !== undefined) {
-        opts.headers['Content-Type'] = 'application/json';
-        opts.body = JSON.stringify(body);
+    return throttle().then(function () {
+      return spRelay() ? null : spUserToken();
+    }).then(function (tok) {
+      var req;
+      if (tok === null) {
+        // The relay writes to exactly one playlist, the one in its settings, so
+        // a write names only whether it replaces or extends it.
+        req = method === 'GET'
+          ? fetch(spRelay() + '/api?path=' + encodeURIComponent(path))
+          : fetch(spRelay() + '/today/' + (method === 'PUT' ? 'replace' : 'append'),
+                  { method: 'POST', body: JSON.stringify(body) });
+      } else {
+        var opts = { method: method, headers: { Authorization: 'Bearer ' + tok } };
+        if (body !== undefined) {
+          opts.headers['Content-Type'] = 'application/json';
+          opts.body = JSON.stringify(body);
+        }
+        req = fetch('https://api.spotify.com/v1' + path, opts);
       }
-      return fetch('https://api.spotify.com/v1' + path, opts).then(function (r) {
-        if (r.status === 401 && attempt < MAX_ATTEMPTS) {
+      return req.then(function (r) {
+        if (r.status === 401 && attempt < MAX_ATTEMPTS && tok !== null) {
           state.spotify.userExp = 0;      // force a refresh, then try once more
           return again(0);
         }
@@ -1085,6 +1142,7 @@
             throw new Error('Spotify ' + r.status + (detail ? ': ' + detail : ''));
           });
         }
+        if (tok === null) forgetLocalSpotify();
         if (r.status === 204) return null;
         return r.text().then(function (t) { return t ? JSON.parse(t) : null; });
       }, function (netErr) {
@@ -1205,7 +1263,9 @@
   // Whatever records it is handed, in the order it is handed them. The day and
   // a hand-picked selection differ only in how that list was chosen.
   async function writeRecordsToPlaylist(records, onStep) {
-    var target = state.spotify.playlistId;
+    // The relay already knows which playlist it may write to; only a browser
+    // using its own connection has to go and find "01. Today" first.
+    var target = spRelay() ? 'relay' : state.spotify.playlistId;
     if (!target) {
       onStep('Looking for “' + state.spotify.playlistName + '”…');
       var found = await findPlaylist(state.spotify.playlistName);
@@ -1322,6 +1382,11 @@
   function renderPlaylistStatus() {
     var box = $('#pl-status');
     if (!box) return;
+    if (spRelay()) {
+      box.textContent = 'Connected through the relay as ' + spRelayState.user +
+        '. Sends go to the one playlist the relay is allowed to write to.';
+      return;
+    }
     var sp = state.spotify;
     box.textContent = loopbackWarning() + (!sp.clientId
       ? 'Add a client ID under Album lengths first — the same one is used here.'
@@ -3830,6 +3895,7 @@
 
     $('#sp-id').value = state.spotify.clientId;
     $('#sp-secret').value = state.spotify.clientSecret;
+    renderSpotifyRelay();
     renderSpotifyStatus();
 
     $('#pl-name').value = state.spotify.playlistName || '';
@@ -3866,6 +3932,32 @@
     });
     return { known: known, review: review, none: none, missing: missing,
              total: state.library.filter(inMode).length };
+  }
+
+  // With the relay connected there is nothing Spotify-related to set up on a
+  // device, so the credential fields and their buttons go away. If the relay
+  // exists but is not connected yet, the fields stay and a note says how.
+  function renderSpotifyRelay() {
+    var relayed = !!spRelay();
+    ['#sp-id', '#sp-secret', '#pl-name', '#pl-link', '#pl-redirect'].forEach(function (s) {
+      var f = $(s) && $(s).closest('.field');
+      if (f) f.hidden = relayed;
+    });
+    ['#sp-save', '#sp-clear', '#pl-connect', '#pl-save', '#pl-copy-redirect', '#pl-forget'].forEach(function (s) {
+      if ($(s)) $(s).hidden = relayed;
+    });
+    var s = spRelayState;
+    var note = !s ? ''
+      : s.connected ? 'Handled by the relay, connected as ' + s.user + '. Nothing to set up on this device.'
+      : s.configured ? 'The relay is set up but not connected to Spotify yet. Open ' + s.login +
+          ' once, in any browser, to connect it.'
+      : '';
+    ['#sp-relay-note', '#pl-relay-note'].forEach(function (id) {
+      var el = $(id);
+      if (!el) return;
+      el.textContent = note;
+      el.hidden = !note;
+    });
   }
 
   function renderSpotifyStatus() {
@@ -4744,6 +4836,7 @@
     // device is most likely to have moved on. Never while this device has
     // something of its own still waiting — a pull replaces the library.
     neonPullIfNewer();
+    checkSpotifyRelay();
     window.addEventListener('focus', function () {
       if (!neonConfigured() || syncBusy) return;
       if (syncState === 'pending' || neonPendingCount()) return;
