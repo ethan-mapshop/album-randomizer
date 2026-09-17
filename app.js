@@ -2787,6 +2787,8 @@
         return '<option value="' + esc(g) + '">' + esc(g) + '</option>';
       }).join('');
     gsel.value = deck().genres.indexOf(genreFilter) > -1 ? genreFilter : '';
+    // Scores may have changed since the list was built.
+    renderRymOptions();
 
     var dsel = $('#lib-decade');
     var wantDecade = dsel.value;
@@ -2873,41 +2875,115 @@
     return v || v === 0 ? Number(v).toFixed(2) : '—';
   }
 
-  // Both sets are natural breaks (Fisher-Jenks, k=5) over the library as it
-  // stands. Open at both ends, so a value outside the range they were derived
-  // from still lands in a band rather than vanishing. Recompute when the
-  // distributions have moved — this is the second recalculation.
+  // Score and length filters are natural breaks (Fisher-Jenks, five classes).
+  // Every range is open at both ends, so a value outside the data they came
+  // from still lands in one rather than vanishing.
   //
-  // Jenks returns the inclusive top of each class and the filter tests
-  // [min, max), so every max below is that cut plus one step: the second RYM
-  // tier tops out at 3.28, so its max reads 3.29. The earlier sets missed this
-  // and put every value sitting exactly on a boundary a tier too high — 140
-  // albums at 39 minutes alone.
+  // Each class is described by the inclusive top value it holds, and the
+  // filter tests [min, max), so every max is that top plus one step. A score of
+  // exactly 3.27 at the top of a class belongs in it, so its max reads 3.28.
+  // The ranges shipped before this computed where each class starts and then
+  // added a step on top, putting every value on a boundary one range too low.
   var RYM_STEP = 0.01;
+  var RYM_CLASSES = 5;
 
-  // 3206 scores, 1.72–4.34, median 3.45. Goodness of variance fit 0.91.
-  var RYM_BANDS = [
-    { min: -Infinity, max: 2.94 },
-    { min: 2.94, max: 3.29 },
-    { min: 3.29, max: 3.55 },
-    { min: 3.55, max: 3.82 },
-    { min: 3.82, max: Infinity }
-  ];
+  // Fisher-Jenks over distinct values and how often each occurs, which gives
+  // exactly the same breaks as running it over every album. Scores carry two
+  // decimals, so even the whole library has only a few hundred distinct
+  // values: a genre takes about three milliseconds. Returns the top value of
+  // each class but the last, or null when there are too few values to split.
+  function jenksTops(values, k) {
+    var counts = {};
+    values.forEach(function (v) { counts[v] = (counts[v] || 0) + 1; });
+    var xs = Object.keys(counts).map(Number).sort(function (a, b) { return a - b; });
+    var m = xs.length;
+    if (m < k) return null;
+    var W = [0], S1 = [0], S2 = [0];
+    for (var i = 0; i < m; i++) {
+      var w = counts[xs[i]];
+      W.push(W[i] + w);
+      S1.push(S1[i] + w * xs[i]);
+      S2.push(S2[i] + w * xs[i] * xs[i]);
+    }
+    function spread(a, b) {
+      var n = W[b] - W[a], s = S1[b] - S1[a];
+      return (S2[b] - S2[a]) - s * s / n;
+    }
+    // best[c][j]: the least within-class spread for the first j values in c
+    // classes; from[c][j]: where that last class began.
+    var best = [], from = [], c, j, a;
+    for (c = 0; c <= k; c++) {
+      best.push(new Array(m + 1).fill(Infinity));
+      from.push(new Array(m + 1).fill(0));
+    }
+    best[0][0] = 0;
+    for (c = 1; c <= k; c++) {
+      for (j = c; j <= m; j++) {
+        for (a = c - 1; a < j; a++) {
+          var v = best[c - 1][a] + spread(a, j);
+          if (v < best[c][j]) { best[c][j] = v; from[c][j] = a; }
+        }
+      }
+    }
+    var tops = [], end = m;
+    for (c = k; c >= 1; c--) { tops.unshift(xs[end - 1]); end = from[c][end]; }
+    return tops.slice(0, k - 1);
+  }
+
+  // The score ranges on offer describe whatever genre is selected, and the
+  // whole library when none is. Worked out when the list is built rather than
+  // stored, so they can never describe a library that has since changed.
+  var rymBandsShown = [];
+  var rymBandsScope = null;
+
+  function rymBandsFor(genre) {
+    var scores = [];
+    state.library.forEach(function (a) {
+      if (!inMode(a) || (genre && a.genre !== genre)) return;
+      if (a.rym === null || a.rym === undefined || a.rym === '') return;
+      scores.push(Math.round(Number(a.rym) * 100) / 100);
+    });
+    var tops = jenksTops(scores, RYM_CLASSES);
+    if (!tops) return [];
+    var bands = [], lo = -Infinity;
+    tops.forEach(function (t) {
+      var max = Math.round((t + RYM_STEP) * 100) / 100;
+      bands.push({ min: lo, max: max });
+      lo = max;
+    });
+    bands.push({ min: lo, max: Infinity });
+    return bands;
+  }
+
+  function renderRymOptions() {
+    var sel = $('#lib-rym');
+    if (!sel) return;
+    var scope = state.mode + ':' + genreFilter;
+    // A range picked in one genre does not exist in another, so changing genre
+    // clears the selection rather than quietly filtering by a vanished range.
+    var keep = scope === rymBandsScope ? sel.value : '';
+    rymBandsScope = scope;
+    rymBandsShown = rymBandsFor(genreFilter);
+    sel.innerHTML = bandOptions(rymBandsShown, function (v) { return v.toFixed(2); },
+      'All scores', RYM_STEP);
+    sel.value = keep && +keep <= rymBandsShown.length ? keep : '';
+  }
 
   var LENGTH_STEP = 1;
 
-  // 3221 runtimes, 5m–3h4m, median 45m. Goodness of variance fit 0.89.
+  // Library-wide, 3221 runtimes, 5m–3h4m, median 45m. Classes top out at 39,
+  // 50, 64 and 100 minutes, so the maxes read one minute higher.
   var LENGTH_BANDS = [
-    { min: -Infinity, max: 41 },
-    { min: 41, max: 52 },
-    { min: 52, max: 66 },
-    { min: 66, max: 102 },
-    { min: 102, max: Infinity }
+    { min: -Infinity, max: 40 },
+    { min: 40, max: 51 },
+    { min: 51, max: 65 },
+    { min: 65, max: 101 },
+    { min: 101, max: Infinity }
   ];
 
   // Labels come off the bounds so they can never drift from the filter itself.
   // max is exclusive, so a label has to step back to stay honest: the tier
-  // stored as [41, 52) is the one a reader would call 41 – 51.
+  // stored as [40, 51) is the one a reader would call 40 – 50.
   function bandLabel(b, show, step) {
     if (b.min === -Infinity) return 'Up to ' + show(b.max - step);
     if (b.max === Infinity) return show(b.min) + ' and up';
@@ -2986,7 +3062,11 @@
     // An active band or decade belongs in the name too, or the file looks like
     // the whole filtered set when it is only a slice of it.
     if ($('#lib-decade').value) bits.push($('#lib-decade').value + 's');
-    if ($('#lib-rym').value) bits.push('rym' + $('#lib-rym').value);
+    // Named by the range itself: the same position in the list means a
+    // different range in every genre.
+    var rb = $('#lib-rym').value ? rymBandsShown[+$('#lib-rym').value - 1] : null;
+    if (rb) bits.push('rym-' + bandLabel(rb, function (v) { return v.toFixed(2); }, RYM_STEP)
+      .toLowerCase().replace(/[^a-z0-9.]+/g, '-'));
     if ($('#lib-length').value) bits.push('len' + $('#lib-length').value);
     bits.push(today());
     return bits.join('-') + '.csv';
@@ -3135,7 +3215,7 @@
     var q = searchFold($('#lib-search').value);
     var genre = genreFilter;
     var status = $('#lib-status').value;
-    var band = $('#lib-rym').value ? RYM_BANDS[+$('#lib-rym').value - 1] : null;
+    var band = $('#lib-rym').value ? rymBandsShown[+$('#lib-rym').value - 1] : null;
     var decade = $('#lib-decade').value ? +$('#lib-decade').value : null;
     var len = $('#lib-length').value ? LENGTH_BANDS[+$('#lib-length').value - 1] : null;
 
@@ -3398,10 +3478,7 @@
     });
     $('#lib-status').addEventListener('change', function () { libLimit = LIB_LIMIT; renderRows(); });
 
-    // Built once — the bands are fixed, so rebuilding them per render would
-    // only risk dropping the selection the way the genre select used to.
-    $('#lib-rym').innerHTML = bandOptions(RYM_BANDS, function (v) { return v.toFixed(2); },
-      'All scores', RYM_STEP);
+    renderRymOptions();
     $('#lib-rym').addEventListener('change', function () { libLimit = LIB_LIMIT; renderRows(); });
 
     $('#lib-length').innerHTML = bandOptions(LENGTH_BANDS, fmt, 'Any length', LENGTH_STEP);
@@ -3411,6 +3488,7 @@
       genreFilter = this.value;
       libLimit = LIB_LIMIT;
       renderSidebarGenres();   // keep the sidebar highlight in step
+      renderRymOptions();
       renderRows();
     });
 
@@ -4873,6 +4951,7 @@
       libLimit = LIB_LIMIT;
       $('#lib-genre').value = genreFilter;   // the other face of the same filter
       renderSidebarGenres();
+      renderRymOptions();
       if (document.body.dataset.view === 'played') renderPlayed();
       else renderRows();
     });
