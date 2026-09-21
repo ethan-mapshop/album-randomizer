@@ -44,7 +44,10 @@
           genres: (typeof CLASSICAL !== 'undefined' && CLASSICAL.periods)
             ? CLASSICAL.periods.slice() : [],
           rotation: 0, session: null
-        }
+        },
+        // The genre-hours deck borrows its names from the album deck and
+        // keeps an order, a pointer and a playlist per genre of its own.
+        genres: { genres: [], rotation: 0, session: null, playlists: {} }
       },
       library: [],
       deletedSeedIds: [],
@@ -73,6 +76,10 @@
           ? JSON.parse(JSON.stringify(CLASSICAL.formMinutes)) : {},
         favoritesBonus: true,
         varietyDraw: true,
+        // Genre hours: how many fill a day, and how long a track waits
+        // before it can come round again.
+        genreHours: 8,
+        genreWindowDays: 60,
         desktopLinks: true,
         lastAddGenre: '',
         sidebarCollapsed: false,
@@ -159,6 +166,7 @@
           if (saved.decks && saved.decks.main) {
             st.decks.main = saved.decks.main;
             if (saved.decks.classical) st.decks.classical = saved.decks.classical;
+            if (saved.decks.genres) st.decks.genres = saved.decks.genres;
           } else if (saved.genres && saved.genres.length) {
             st.decks.main = {
               genres: saved.genres,
@@ -166,7 +174,7 @@
               session: saved.session || null
             };
           }
-          if (saved.mode === 'classical' || saved.mode === 'main') st.mode = saved.mode;
+          if (st.decks[saved.mode]) st.mode = saved.mode;
           st.library = saved.library;
           st.deletedSeedIds = saved.deletedSeedIds || [];
           st.deletedGenres = saved.deletedGenres || [];
@@ -1161,7 +1169,8 @@
         .then(function (j) {
           var items = (j && j.items) || [];
           items.forEach(function (it) {
-            var t = it && it.track;
+            // Renamed with the move from /tracks to /items.
+            var t = it && (it.item || it.track);
             if (t && t.id) { ids.push(t.id); ms += t.duration_ms || 0; }
           });
           var total = (j && j.total) || ids.length;
@@ -1262,22 +1271,23 @@
 
   // Whatever records it is handed, in the order it is handed them. The day and
   // a hand-picked selection differ only in how that list was chosen.
-  async function writeRecordsToPlaylist(records, onStep) {
-    // The relay already knows which playlist it may write to; only a browser
-    // using its own connection has to go and find "01. Today" first.
+  // The relay already knows which playlist it may write to; only a browser
+  // using its own connection has to go and find "01. Today" first.
+  async function playlistTarget(onStep) {
     var target = spRelay() ? 'relay' : state.spotify.playlistId;
-    if (!target) {
-      onStep('Looking for “' + state.spotify.playlistName + '”…');
-      var found = await findPlaylist(state.spotify.playlistName);
-      if (!found) {
-        throw new Error('No playlist called “' + state.spotify.playlistName +
-          '”. Check the name in Settings, or paste its link there.');
-      }
-      target = found.id;
-      state.spotify.playlistId = target;
-      save();
+    if (target) return target;
+    onStep('Looking for “' + state.spotify.playlistName + '”…');
+    var found = await findPlaylist(state.spotify.playlistName);
+    if (!found) {
+      throw new Error('No playlist called “' + state.spotify.playlistName +
+        '”. Check the name in Settings, or paste its link there.');
     }
+    state.spotify.playlistId = found.id;
+    save();
+    return found.id;
+  }
 
+  async function writeRecordsToPlaylist(records, onStep) {
     var uris = [], skipped = [], trimmed = 0, albums = 0, cached = 0;
     for (var i = 0; i < records.length; i++) {
       var a = records[i];
@@ -1301,18 +1311,29 @@
     }
     if (!uris.length) throw new Error('None of the picked albums could be read from Spotify.');
 
-    // Spotify retired /playlists/{id}/tracks in February 2026 in favour of
-    // /items, and the retired path answers 403 rather than 404 — which reads
-    // exactly like a permissions problem and cost a long detour through
-    // dashboard apps and scopes. The body is unchanged.
+    var wrote = await writeUris(uris, onStep);
+    return { tracks: uris.length, albums: albums, skipped: skipped, trimmed: trimmed,
+             cached: cached, id: wrote.id };
+  }
+
+  // The playlist becomes exactly this list of tracks. The first write is a
+  // PUT, which Spotify reads as "these are now the contents", so clearing and
+  // filling happen in one call rather than leaving an empty list behind if a
+  // later one fails.
+  //
+  // Spotify retired /playlists/{id}/tracks in February 2026 in favour of
+  // /items, and the retired path answers 403 rather than 404 — which reads
+  // exactly like a permissions problem and cost a long detour through
+  // dashboard apps and scopes. The body is unchanged.
+  async function writeUris(uris, onStep) {
+    var target = await playlistTarget(onStep);
     onStep('Replacing the playlist with ' + uris.length + ' tracks…');
     await spUser('PUT', '/playlists/' + target + '/items', { uris: uris.slice(0, PL_CHUNK) });
     for (var at = PL_CHUNK; at < uris.length; at += PL_CHUNK) {
       onStep('Adding ' + Math.min(at + PL_CHUNK, uris.length) + ' of ' + uris.length + '…');
       await spUser('POST', '/playlists/' + target + '/items', { uris: uris.slice(at, at + PL_CHUNK) });
     }
-    return { tracks: uris.length, albums: albums, skipped: skipped, trimmed: trimmed,
-             cached: cached, id: target };
+    return { tracks: uris.length, id: target };
   }
 
   // Spotify stopped accepting the name "localhost" as a redirect: a loopback
@@ -1477,7 +1498,8 @@
 
   var SYNC_DEBOUNCE = 4000;     // quiet period after the last edit before pushing
   var SYNC_SETTINGS = ['targetMinutes', 'defaultMinutes', 'formMinutes',
-                       'favoritesBonus', 'varietyDraw', 'desktopLinks', 'lastAddGenre'];
+                       'favoritesBonus', 'varietyDraw', 'desktopLinks', 'lastAddGenre',
+                       'genreHours', 'genreWindowDays'];
   var syncTimer = null;
   var syncBusy = false;
   var syncState = 'idle';       // idle | pulling | pushing | conflict | error | off
@@ -1548,6 +1570,7 @@
     if (remote.decks && remote.decks.main) {
       state.decks.main = remote.decks.main;
       if (remote.decks.classical) state.decks.classical = remote.decks.classical;
+      if (remote.decks.genres) state.decks.genres = remote.decks.genres;
     } else if (remote.genres && remote.genres.length) {
       // Written before decks existed, so all of it is the album deck.
       state.decks.main = {
@@ -2362,6 +2385,9 @@
   /* ───────────────────────────── today ───────────────────────────── */
 
   function renderToday() {
+    // Three decks, one set of view functions: the genre deck draws its own
+    // day rather than an album one, and nothing below has to know.
+    if (isGenreDay()) return renderGenreToday();
     // A freshly drawn day is persisted straight away, so reopening the page
     // shows the same picks rather than rerolling them.
     if (!deck().session) { deck().session = newSession(); save(); }
@@ -2754,6 +2780,7 @@
   }
 
   function renderLibrary() {
+    if (isGenreDay()) return renderGenreLibrary();
     var lib = state.library.filter(inMode);
     var played = lib.filter(function (a) { return a.played; }).length;
     // A classical record is a work, not an album, and calling it one reads as a
@@ -3286,6 +3313,8 @@
   }
 
   function renderRows() {
+    if (isGenreDay()) return;   // that deck has no album rows
+
     var matches = currentMatches();
 
     var shown = matches.slice(0, libLimit);
@@ -3812,6 +3841,7 @@
   /* ──────────────────────────── played ──────────────────────────── */
 
   function renderPlayed() {
+    if (isGenreDay()) return renderGenrePlayed();
     var all = state.library.filter(function (a) { return a.played && inMode(a); });
     var played = genreFilter
       ? all.filter(function (a) { return a.genre === genreFilter; })
@@ -4034,6 +4064,7 @@
     $('#set-fav-bonus').checked = !!state.settings.favoritesBonus;
     $('#set-variety').checked = !!state.settings.varietyDraw;
     $('#set-desktop-links').checked = !!state.settings.desktopLinks;
+    renderGenreSettings();
 
     $('#neon-conn').value = state.neon.conn;
     // With the relay there is nothing to set up on a device, so the password
@@ -4138,21 +4169,29 @@
   function renderGenreOrder() {
     var counts = {};
     state.library.forEach(function (a) { counts[a.genre] = (counts[a.genre] || 0) + 1; });
+    // On the genre-hours deck the same list orders the rotation, but the
+    // names belong to the album deck: what matters per row is whether a
+    // playlist is linked, and deleting one here would mean nothing.
+    var hours = isGenreDay(), links = hours ? genreLinks() : null;
     $('#genre-order').innerHTML = deck().genres.map(function (g, i) {
       var n = counts[g] || 0;
       if (g === deletingGenre) return genreDeleteRow(g, n);
+      var note = hours
+        ? (links[g] && links[g].id ? (links[g].tracks || 0) + ' tracks' : 'no playlist')
+        : (n ? n + ' album' + (n === 1 ? '' : 's') : 'empty');
       return '<li draggable="true" data-genre="' + esc(g) + '"' +
         (i === deck().rotation ? ' class="cur"' : '') + '>' +
         '<span class="grip" aria-hidden="true">⠿</span>' +
         '<span class="gname" style="--h:' + hue(g) + '">' + esc(g) + '</span>' +
-        '<span class="gcount">' + (n ? n + ' album' + (n === 1 ? '' : 's') : 'empty') + '</span>' +
+        '<span class="gcount">' + esc(note) + '</span>' +
         (i === deck().rotation ? '<span class="gnext">next up</span>' : '') +
         '<span class="gmove">' +
           '<button type="button" data-act="g-up" title="Move up"' + (i ? '' : ' disabled') + '>↑</button>' +
           '<button type="button" data-act="g-down" title="Move down"' +
             (i === deck().genres.length - 1 ? ' disabled' : '') + '>↓</button>' +
-          '<button type="button" data-act="g-del" class="del" title="Delete genre"' +
-            (deck().genres.length < 2 ? ' disabled' : '') + '>✕</button>' +
+          (hours ? '' :
+            '<button type="button" data-act="g-del" class="del" title="Delete genre"' +
+            (deck().genres.length < 2 ? ' disabled' : '') + '>✕</button>') +
         '</span></li>';
     }).join('');
   }
@@ -4163,8 +4202,11 @@
     var nameAt = function (i) { return deck().genres[i]; };
     var rotationName = nameAt(deck().rotation);
     var session = deck().session;
-    var startName = session ? nameAt(session.startRotation) : null;
-    var slotNames = session ? session.slots.map(function (sl) {
+    // A genre-hours day stores genre names rather than indexes, so only an
+    // album-style day needs re-anchoring.
+    var slotted = session && session.slots;
+    var startName = slotted ? nameAt(session.startRotation) : null;
+    var slotNames = slotted ? session.slots.map(function (sl) {
       return sl.genreIndex === BONUS ? null : nameAt(sl.genreIndex);
     }) : [];
 
@@ -4175,7 +4217,7 @@
       return i > -1 ? i : 0;
     };
     deck().rotation = idx(rotationName);
-    if (session) {
+    if (slotted) {
       session.startRotation = idx(startName);
       session.slots.forEach(function (sl, n) {
         if (sl.genreIndex === BONUS) return;
@@ -4855,6 +4897,650 @@
 
   /* ──────────────────────────── shell ──────────────────────────── */
 
+  /* ───────────────────────── genre hours ─────────────────────────
+   * A day of whole hours, one per genre, drawn from that genre's own Spotify
+   * playlist rather than from the album library. The genre names are the album
+   * deck's, in an order of their own: split a genre over there, make a playlist
+   * with the new name, and it takes its turn here without anything else being
+   * touched.
+   *
+   * The only thing remembered about a track is the day it last played, in a
+   * table of its own. An hour prefers tracks that have not come up inside the
+   * window, and falls back to the ones that played longest ago, so a small
+   * genre still gets a full hour instead of running short.
+   */
+
+  var HOUR_MS = 60 * 60 * 1000;
+
+  function isGenreDay() { return state.mode === 'genres'; }
+  function genreDeck() { return state.decks.genres; }
+
+  function genreLinks() {
+    var d = genreDeck();
+    if (!d.playlists) d.playlists = {};
+    return d.playlists;
+  }
+
+  // Same choice the album cards make: the desktop app if that is how links are
+  // set to open, the web player otherwise.
+  function playlistHref(id) {
+    return state.settings.desktopLinks
+      ? 'spotify:playlist:' + id
+      : 'https://open.spotify.com/playlist/' + id;
+  }
+
+  // The database stores an instant; a day is the one the listening happened on
+  // here rather than in UTC, so this matches today() rather than toISOString.
+  function dayOf(ms) {
+    var d = new Date(ms);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') +
+      '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  function genreWindowMs() {
+    return Math.max(0, +state.settings.genreWindowDays || 0) * 86400000;
+  }
+
+  function genreHoursWanted() {
+    return Math.max(1, Math.min(24, +state.settings.genreHours || 8));
+  }
+
+  // The names come from the album deck, the order stays this deck's own. Run
+  // before anything reads the list, so a genre added, split or deleted over
+  // there needs no migration here.
+  function syncGenreDeck() {
+    var d = genreDeck();
+    if (!d) return false;
+    var live = state.decks.main.genres || [];
+    var next = (d.genres || []).filter(function (g) { return live.indexOf(g) > -1; });
+    live.forEach(function (g) { if (next.indexOf(g) === -1) next.push(g); });
+    var same = next.length === (d.genres || []).length &&
+      next.every(function (g, i) { return g === d.genres[i]; });
+    if (same) return false;
+    var startName = (d.genres || [])[d.rotation];
+    d.genres = next;
+    d.rotation = Math.max(0, next.indexOf(startName));
+    // A genre deleted over there leaves a link to a playlist for a genre that
+    // no longer exists.
+    var links = genreLinks();
+    Object.keys(links).forEach(function (g) { if (next.indexOf(g) === -1) delete links[g]; });
+    return true;
+  }
+
+  /* ---- what has played lately ---- */
+
+  // Held for the page rather than saved: it belongs to the database, and a
+  // stale copy would hand an hour tracks it played this morning.
+  var playHistory = null;
+
+  function loadPlayHistory(force) {
+    if (playHistory && !force) return Promise.resolve(playHistory);
+    return dbCall('plays').then(function (res) {
+      var map = {};
+      neonRows(res).forEach(function (r) {
+        map[r.id] = { at: Number(r.at) * 1000, genre: r.genre, artist: r.artist, title: r.title };
+      });
+      playHistory = map;
+      return map;
+    }, function (err) {
+      throw new Error(/track_plays/.test(err.message || '')
+        ? 'The track history table is missing — run worker/track-plays.sql in the Neon SQL editor.'
+        : err.message);
+    });
+  }
+
+  function logGenrePlays(rows) {
+    if (!rows.length) return Promise.resolve(0);
+    return dbCall('logplays', [JSON.stringify(rows)]).then(function (res) {
+      var row = neonRows(res)[0];
+      // Recorded there, so record it here too rather than asking again.
+      var now = Date.now();
+      rows.forEach(function (r) {
+        if (playHistory) playHistory[r.id] = { at: now, genre: r.genre, artist: r.artist, title: r.title };
+      });
+      return Number((row && row.logged) || rows.length);
+    });
+  }
+
+  /* ---- reading a genre's playlist ---- */
+
+  // Kept for this page load only, so reshuffling an hour costs nothing while a
+  // fresh build always sees what the playlist holds now.
+  var genreTrackCache = {};
+
+  function genreTracks(genre, onStep) {
+    var link = genreLinks()[genre];
+    if (!link || !link.id) return Promise.reject(new Error(genre + ' has no playlist linked.'));
+    var out = [];
+    function page(offset) {
+      return spUser('GET', '/playlists/' + link.id + '/items?limit=100&offset=' + offset)
+        .then(function (j) {
+          var items = (j && j.items) || [];
+          var total = (j && j.total) || 0;
+          items.forEach(function (it) {
+            // Spotify renamed the wrapper when it retired /tracks for /items.
+            var t = it && (it.item || it.track);
+            // A local file has no id and cannot be put on a playlist through
+            // the API; an episode is not a track.
+            if (!t || !t.id || t.is_local || (t.type && t.type !== 'track')) return;
+            var artist = (t.artists && t.artists[0]) || {};
+            out.push({
+              id: t.id, name: t.name || '', artist: artist.name || '',
+              artistId: artist.id || artist.name || t.id, ms: t.duration_ms || 0
+            });
+          });
+          if (onStep) onStep(out.length, total);
+          if (items.length && offset + items.length < total) return page(offset + items.length);
+          return out;
+        });
+    }
+    return page(0).then(function (tracks) {
+      genreTrackCache[genre] = tracks;
+      link.tracks = tracks.length;
+      link.readAt = new Date().toISOString();
+      return tracks;
+    });
+  }
+
+  function shuffled(list) {
+    var out = list.slice();
+    for (var i = out.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = out[i]; out[i] = out[j]; out[j] = t;
+    }
+    return out;
+  }
+
+  // Fresh tracks in random order first, then whatever played longest ago. One
+  // track per artist while that can be kept: the rule only bends when the pool
+  // would otherwise leave the hour short, which is also when repeats appear.
+  function buildHour(genre, tracks, history, windowMs) {
+    var now = Date.now();
+    var fresh = [], stale = [];
+    tracks.forEach(function (t) {
+      var seen = history[t.id];
+      if (!seen || now - seen.at > windowMs) fresh.push(t);
+      else stale.push(t);
+    });
+    stale.sort(function (a, b) { return history[a.id].at - history[b.id].at; });
+    var pool = shuffled(fresh).concat(stale);
+
+    var picked = [], taken = {}, artists = {}, ms = 0, repeats = 0;
+    [true, false].forEach(function (oneEach) {
+      for (var i = 0; i < pool.length && ms < HOUR_MS; i++) {
+        var t = pool[i];
+        if (taken[t.id]) continue;
+        if (oneEach && artists[t.artistId]) continue;
+        taken[t.id] = true;
+        artists[t.artistId] = true;
+        ms += t.ms;
+        if (history[t.id] && now - history[t.id].at <= windowMs) repeats++;
+        picked.push({ id: t.id, name: t.name, artist: t.artist, ms: t.ms,
+                      again: history[t.id] ? history[t.id].at : 0 });
+      }
+    });
+    return { genre: genre, tracks: picked, ms: ms, repeats: repeats, of: tracks.length };
+  }
+
+  /* ---- building and sending a day ---- */
+
+  async function buildGenreDay(onStep) {
+    syncGenreDeck();
+    var d = genreDeck();
+    var links = genreLinks();
+    var want = genreHoursWanted();
+
+    // A genre with no playlist yet waits its turn rather than blocking the
+    // day, but the rotation still walks past it.
+    var order = [], last = -1;
+    for (var i = 0; i < d.genres.length && order.length < want; i++) {
+      var at = (d.rotation + i) % d.genres.length;
+      var name = d.genres[at];
+      if (!links[name] || !links[name].id) continue;
+      order.push(name);
+      last = at;
+    }
+    if (!order.length) throw new Error('No genre has a playlist linked yet — link them in Settings.');
+
+    var history = await loadPlayHistory(true);
+    var windowMs = genreWindowMs();
+    var hours = [];
+    for (var n = 0; n < order.length; n++) {
+      onStep('Reading ' + order[n] + ' — hour ' + (n + 1) + ' of ' + order.length + '…',
+        n / order.length);
+      var tracks = await genreTracks(order[n]);
+      hours.push(buildHour(order[n], tracks, history, windowMs));
+    }
+
+    d.session = {
+      date: today(),
+      startGenre: order[0],
+      nextRotation: (last + 1) % d.genres.length,
+      hours: hours,
+      sent: null
+    };
+    save();
+    return d.session;
+  }
+
+  // One hour redrawn, from the copy already read.
+  async function reshuffleHour(genre) {
+    var s = genreDeck().session;
+    if (!s) return;
+    var tracks = genreTrackCache[genre] || await genreTracks(genre);
+    var history = await loadPlayHistory(false);
+    var fresh = buildHour(genre, tracks, history, genreWindowMs());
+    s.hours = s.hours.map(function (h) { return h.genre === genre ? fresh : h; });
+    save();
+  }
+
+  function genreDayTracks(session) {
+    var all = [];
+    session.hours.forEach(function (h) {
+      h.tracks.forEach(function (t) { all.push({ hour: h.genre, track: t }); });
+    });
+    return all;
+  }
+
+  // The day goes out in hour order, and what went out is recorded: sending is
+  // the point at which these tracks count as played and the rotation moves on.
+  async function sendGenreDay(onStep) {
+    var d = genreDeck();
+    var s = d.session;
+    if (!s || !s.hours.length) throw new Error('Build a day first.');
+    var all = genreDayTracks(s);
+    if (!all.length) throw new Error('This day has no tracks.');
+
+    await writeUris(all.map(function (x) { return TRACK_PREFIX + x.track.id; }), onStep);
+
+    onStep('Recording ' + all.length + ' tracks…');
+    await logGenrePlays(all.map(function (x) {
+      return { id: x.track.id, genre: x.hour, artist: x.track.artist, title: x.track.name };
+    }));
+
+    s.sent = new Date().toISOString();
+    d.rotation = s.nextRotation;
+    save();
+    return { tracks: all.length, hours: s.hours.length };
+  }
+
+  /* ---- linking each genre to its playlist ---- */
+
+  // Matched by name, so a genre split into two needs nothing here beyond a
+  // playlist called after it. Names are compared loosely enough to survive
+  // punctuation and case, and never guessed between two that look alike.
+  async function linkGenrePlaylists(onStep) {
+    function fold(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, ''); }
+    var byFold = {}, clash = {}, offset = 0, seen = 0;
+    for (;;) {
+      onStep('Reading your playlists — ' + seen + ' so far…');
+      var j = await spUser('GET', '/me/playlists?limit=50&offset=' + offset);
+      var items = (j && j.items) || [];
+      items.forEach(function (p) {
+        if (!p || !p.name) return;
+        var f = fold(p.name);
+        // The track count moved with the wrapper rename.
+        var total = (p.items && p.items.total) || (p.tracks && p.tracks.total) || 0;
+        if (byFold[f] && byFold[f].id !== p.id) clash[f] = true;
+        else byFold[f] = { id: p.id, name: p.name, tracks: total };
+      });
+      seen += items.length;
+      if (!items.length || !j.next) break;
+      offset += items.length;
+    }
+
+    syncGenreDeck();
+    var links = genreLinks();
+    var linked = 0, already = 0, missing = [], ambiguous = [];
+    genreDeck().genres.forEach(function (g) {
+      var f = fold(g);
+      if (clash[f]) { ambiguous.push(g); return; }
+      var hit = byFold[f];
+      if (!hit) { missing.push(g); return; }
+      if (links[g] && links[g].id === hit.id) {
+        links[g].tracks = hit.tracks;
+        already++;
+        return;
+      }
+      links[g] = { id: hit.id, name: hit.name, tracks: hit.tracks };
+      linked++;
+    });
+    save();
+    render();
+    return { linked: linked, already: already, missing: missing, ambiguous: ambiguous, seen: seen };
+  }
+
+  /* ---- today ---- */
+
+  var genreBusy = false;
+
+  function fmtTrack(ms) {
+    var total = Math.round(ms / 1000);
+    return Math.floor(total / 60) + ':' + String(total % 60).padStart(2, '0');
+  }
+
+  function genreStep(msg, frac) {
+    var box = $('#g-progress');
+    if (!box) return;
+    box.hidden = !msg;
+    $('#g-log').textContent = msg || '';
+    $('#g-fill').style.width = Math.round((frac || 0) * 100) + '%';
+  }
+
+  function renderGenreToday() {
+    var d = genreDeck();
+    if (!d || !$('#view-g-today')) return;
+    syncGenreDeck();
+    var s = d.session;
+    var links = genreLinks();
+    var ready = d.genres.filter(function (g) { return links[g] && links[g].id; }).length;
+
+    $('#g-date').textContent = s
+      ? longDate(s.date) + (s.sent ? ' · sent' : s.date !== today() ? ' · still open' : '')
+      : 'Nothing built yet';
+
+    // Before a day is sent the rotation has not moved, so saying what is next
+    // would name the genre already sitting in hour one.
+    var pending = s && !s.sent;
+    var sub = pending
+      ? 'Starts with <b>' + esc(s.startGenre) + '</b>. Sending it moves the rotation on to <b>' +
+        esc(d.genres[s.nextRotation] || '—') + '</b>.'
+      : 'Next day starts with <b>' + esc(d.genres[d.rotation] || '—') + '</b>. ' +
+        genreHoursWanted() + ' hours, one genre each, no repeat inside ' +
+        (+state.settings.genreWindowDays || 0) + ' days.';
+    if (ready < d.genres.length) {
+      sub += ' <span class="dim">' + (d.genres.length - ready) + ' of ' + d.genres.length +
+        ' genres have no playlist linked yet.</span>';
+    }
+    $('#g-sub').innerHTML = sub;
+
+    var ms = s ? s.hours.reduce(function (n, h) { return n + h.ms; }, 0) : 0;
+    var target = genreHoursWanted() * HOUR_MS;
+    $('#g-meter-fill').style.width = Math.min(100, (ms / target) * 100) + '%';
+    $('#g-added').textContent = fmt(Math.round(ms / 60000));
+    $('#g-count').textContent = s
+      ? ' · ' + s.hours.length + ' hour' + (s.hours.length === 1 ? '' : 's') +
+        ' · ' + genreDayTracks(s).length + ' tracks'
+      : '';
+    $('#g-target').textContent = fmt(Math.round(target / 60000));
+
+    renderGenreHours();
+
+    $('#g-build').disabled = genreBusy || !ready || !spLinked();
+    $('#g-build').textContent = s ? 'Build a new day' : 'Build the day';
+    $('#g-send').disabled = genreBusy || !s || !s.hours.length || !spLinked();
+    $('#g-copy').disabled = !s || !s.hours.length;
+    $('#g-clear').disabled = genreBusy || !s;
+
+    var note = '';
+    if (!spLinked()) note = 'Connect Spotify in Settings to read the playlists.';
+    else if (!ready) note = 'No genre has a playlist yet — use “Link genre playlists” in Settings.';
+    else if (s && s.sent) note = 'Sent to “' + esc(state.spotify.playlistName) + '” at ' +
+      new Date(s.sent).toLocaleTimeString() + '. Building again starts a new day.';
+    $('#g-note').innerHTML = note;
+    $('#g-note').hidden = !note;
+  }
+
+  function renderGenreHours() {
+    var box = $('#g-hours');
+    if (!box) return;
+    var s = genreDeck().session;
+    if (!s || !s.hours.length) {
+      box.innerHTML = '<p class="dim center">No day built yet.</p>';
+      return;
+    }
+    box.innerHTML = s.hours.map(function (h, i) {
+      var note = [h.tracks.length + ' tracks', fmt(Math.round(h.ms / 60000))];
+      if (h.repeats) note.push(h.repeats + ' played recently');
+      if (h.of) note.push('of ' + h.of + ' in the playlist');
+      return '<div class="hour" data-genre="' + esc(h.genre) + '">' +
+        '<div class="hour-head">' +
+          '<span class="hour-num">' + (i + 1) + '</span>' +
+          '<span class="hour-genre" style="--h:' + hue(h.genre) + '">' + esc(h.genre) + '</span>' +
+          '<span class="hour-note dim">' + esc(note.join(' · ')) + '</span>' +
+          '<span class="hour-acts">' +
+            '<button class="btn btn-quiet" type="button" data-act="g-shuffle">Reshuffle</button>' +
+            '<button class="btn btn-quiet" type="button" data-act="g-tracks">Tracks</button>' +
+          '</span>' +
+        '</div>' +
+        '<ol class="hour-tracks" hidden>' + h.tracks.map(function (t) {
+          return '<li><span class="ht-artist">' + esc(t.artist) + '</span>' +
+            '<span class="ht-name">' + esc(t.name) + '</span>' +
+            '<span class="ht-len dim">' + fmtTrack(t.ms) + '</span></li>';
+        }).join('') + '</ol>' +
+      '</div>';
+    }).join('');
+  }
+
+  function genreDayText() {
+    var s = genreDeck().session;
+    if (!s) return '';
+    return s.hours.map(function (h, i) {
+      return 'Hour ' + (i + 1) + ' — ' + h.genre + ' (' + fmt(Math.round(h.ms / 60000)) + ')\n' +
+        h.tracks.map(function (t) { return '  ' + t.artist + ' — ' + t.name; }).join('\n');
+    }).join('\n\n');
+  }
+
+  /* ---- library and played, for this deck ---- */
+
+  function renderGenreLibrary() {
+    var box = $('#g-lib-body');
+    if (!box) return;
+    syncGenreDeck();
+    var d = genreDeck();
+    var links = genreLinks();
+    var recent = {}, last = {};
+    var cutoff = Date.now() - genreWindowMs();
+    if (playHistory) {
+      Object.keys(playHistory).forEach(function (id) {
+        var p = playHistory[id];
+        if (!p.genre) return;
+        if (p.at >= cutoff) recent[p.genre] = (recent[p.genre] || 0) + 1;
+        if (!last[p.genre] || p.at > last[p.genre]) last[p.genre] = p.at;
+      });
+    }
+
+    box.innerHTML = d.genres.map(function (g, i) {
+      var link = links[g];
+      var known = playHistory ? (recent[g] || 0) : null;
+      return '<div class="grow' + (i === d.rotation ? ' is-next' : '') + '">' +
+        '<span class="grow-name" style="--h:' + hue(g) + '">' + esc(g) + '</span>' +
+        // The playlist is almost always named after the genre, so saying the
+        // name again is noise. It earns its place only when they differ.
+        '<span class="grow-pl">' + (link && link.id
+          ? '<a href="' + esc(playlistHref(link.id)) + '" target="_blank" rel="noopener">' +
+            (link.name && link.name !== g ? esc(link.name) : 'open playlist') + '</a>'
+          : '<span class="dim">no playlist</span>') + '</span>' +
+        '<span class="grow-n dim">' + (link && link.tracks ? link.tracks + ' tracks' : '—') + '</span>' +
+        '<span class="grow-n dim">' + (known === null ? '' : known + ' played lately') + '</span>' +
+        '<span class="grow-n dim">' + (last[g] ? shortDate(dayOf(last[g])) : '') + '</span>' +
+        (i === d.rotation ? '<span class="gnext">next up</span>' : '') +
+      '</div>';
+    }).join('');
+
+    var linked = d.genres.filter(function (g) { return links[g] && links[g].id; }).length;
+    var tracks = d.genres.reduce(function (n, g) {
+      return n + ((links[g] && links[g].tracks) || 0);
+    }, 0);
+    $('#g-lib-summary').textContent = linked + ' of ' + d.genres.length + ' genres linked' +
+      (tracks ? ' · ' + tracks.toLocaleString() + ' tracks in those playlists' : '') +
+      (playHistory ? '' : ' · history not loaded yet');
+  }
+
+  function renderGenrePlayed() {
+    var box = $('#g-played-body');
+    if (!box) return;
+    if (!playHistory) {
+      box.innerHTML = '<p class="dim center">Nothing loaded yet.</p>';
+      $('#g-played-summary').textContent = '';
+      return;
+    }
+    var rows = Object.keys(playHistory).map(function (id) {
+      var p = playHistory[id];
+      return { id: id, at: p.at, genre: p.genre, artist: p.artist, title: p.title };
+    }).sort(function (a, b) { return b.at - a.at; });
+
+    var cutoff = Date.now() - genreWindowMs();
+    var inWindow = rows.filter(function (r) { return r.at >= cutoff; }).length;
+    $('#g-played-summary').textContent = rows.length.toLocaleString() + ' tracks played · ' +
+      inWindow.toLocaleString() + ' inside the ' + (+state.settings.genreWindowDays || 0) + '-day window';
+
+    var day = '';
+    box.innerHTML = rows.slice(0, 500).map(function (r) {
+      var iso = dayOf(r.at);
+      var head = '';
+      if (iso !== day) {
+        day = iso;
+        head = '<h3 class="gp-day">' + esc(longDate(iso)) + '</h3>';
+      }
+      return head + '<div class="gp-row">' +
+        '<span class="gp-genre" style="--h:' + hue(r.genre) + '">' + esc(r.genre || '') + '</span>' +
+        '<span class="gp-artist">' + esc(r.artist || '') + '</span>' +
+        '<span class="gp-title">' + esc(r.title || '') + '</span>' +
+      '</div>';
+    }).join('') + (rows.length > 500 ? '<p class="dim center">Showing the most recent 500.</p>' : '');
+  }
+
+  function renderGenreSettings() {
+    var h = $('#set-genre-hours');
+    if (!h) return;
+    h.value = genreHoursWanted();
+    $('#set-genre-window').value = +state.settings.genreWindowDays || 0;
+    var d = genreDeck();
+    var links = genreLinks();
+    var linked = d.genres.filter(function (g) { return links[g] && links[g].id; }).length;
+    var box = $('#g-link-status');
+    if (box && !genreBusy) {
+      box.textContent = linked + ' of ' + d.genres.length + ' genres have a playlist.';
+    }
+  }
+
+  function wireGenres() {
+    if (!$('#view-g-today')) return;
+
+    $('#g-build').addEventListener('click', function () {
+      if (genreBusy) return;
+      genreBusy = true;
+      renderGenreToday();
+      buildGenreDay(genreStep).then(function () {
+        genreBusy = false;
+        genreStep('');
+        renderGenreToday();
+        toast('Day built.');
+      }, function (err) {
+        genreBusy = false;
+        genreStep('');
+        renderGenreToday();
+        toast(err.message === 'RATE_LIMIT'
+          ? 'Spotify is rate-limiting this app — try again later.' : err.message, 6000);
+      });
+    });
+
+    $('#g-send').addEventListener('click', function () {
+      if (genreBusy) return;
+      var s = genreDeck().session;
+      if (s && s.sent && !confirm('This day was already sent. Send it again?')) return;
+      genreBusy = true;
+      renderGenreToday();
+      sendGenreDay(function (msg) { genreStep(msg, 0.5); }).then(function (r) {
+        genreBusy = false;
+        genreStep('');
+        render();
+        toast(r.tracks + ' tracks in ' + r.hours + ' hours sent to “' +
+          state.spotify.playlistName + '”.', 5000);
+      }, function (err) {
+        genreBusy = false;
+        genreStep('');
+        renderGenreToday();
+        toast(err.message, 6000);
+      });
+    });
+
+    $('#g-copy').addEventListener('click', function () {
+      copyText(genreDayText(), 'Day copied.');
+    });
+
+    $('#g-clear').addEventListener('click', function () {
+      if (!confirm('Throw away the day that is built?')) return;
+      genreDeck().session = null;
+      save();
+      renderGenreToday();
+    });
+
+    $('#g-hours').addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      var card = btn.closest('.hour');
+      var genre = card && card.dataset.genre;
+      if (!genre) return;
+      if (btn.dataset.act === 'g-tracks') {
+        var list = card.querySelector('.hour-tracks');
+        list.hidden = !list.hidden;
+        btn.textContent = list.hidden ? 'Tracks' : 'Hide';
+        return;
+      }
+      if (genreBusy) return;
+      genreBusy = true;
+      btn.disabled = true;
+      reshuffleHour(genre).then(function () {
+        genreBusy = false;
+        renderGenreToday();
+      }, function (err) {
+        genreBusy = false;
+        renderGenreToday();
+        toast(err.message, 5000);
+      });
+    });
+
+    $('#g-link').addEventListener('click', function () {
+      var btn = this, box = $('#g-link-status');
+      if (!spLinked()) { toast('Connect Spotify in Settings first.'); return; }
+      btn.disabled = true;
+      genreBusy = true;
+      linkGenrePlaylists(function (msg) { box.textContent = msg; }).then(function (r) {
+        btn.disabled = false;
+        genreBusy = false;
+        var bits = ['looked at ' + r.seen + ' playlists', r.linked + ' newly linked'];
+        if (r.already) bits.push(r.already + ' already were');
+        if (r.ambiguous.length) bits.push(r.ambiguous.length + ' too alike to choose');
+        if (r.missing.length) bits.push('no playlist for ' + r.missing.join(', '));
+        box.textContent = bits.join(' · ');
+      }, function (err) {
+        btn.disabled = false;
+        genreBusy = false;
+        box.textContent = 'Stopped: ' + (err.message === 'RATE_LIMIT'
+          ? 'Spotify is rate-limiting this app — try again later.' : err.message);
+      });
+    });
+
+    $('#set-genre-hours').addEventListener('change', function () {
+      state.settings.genreHours = Math.max(1, Math.min(24, +this.value || 8));
+      this.value = state.settings.genreHours;
+      save();
+      renderGenreToday();
+    });
+
+    $('#set-genre-window').addEventListener('change', function () {
+      state.settings.genreWindowDays = Math.max(0, Math.min(3650, +this.value || 0));
+      this.value = state.settings.genreWindowDays;
+      save();
+      renderGenreToday();
+    });
+  }
+
+  // The history is only worth a call when a view actually shows it, and only
+  // once per page load unless a day is built.
+  function genreHistoryForView() {
+    if (playHistory || !neonConfigured()) return;
+    loadPlayHistory(false).then(function () {
+      renderGenreLibrary();
+      renderGenrePlayed();
+    }, function (err) {
+      var box = $('#g-lib-summary');
+      if (box) box.textContent = err.message;
+    });
+  }
+
   function renderDeckSwitch() {
     var box = $('#deck-switch');
     if (!box) return;
@@ -4886,9 +5572,9 @@
     save();
     renderDeckSwitch();
     render();
-    var view = document.body.dataset.view || 'today';
-    if (view === 'library') renderRows();
-    else if (view === 'played') renderPlayed();
+    // The genre deck has its own Today, Library and Played, so the view has to
+    // be shown again rather than only redrawn.
+    show(document.body.dataset.view || 'today');
   }
 
   function applyTheme() {
@@ -4908,8 +5594,13 @@
   }
 
   function show(name) {
+    // Today, Library and Played each have a genre-deck twin; Settings is
+    // shared, with the panels that do not apply hidden by the deck.
+    var genreDeckOpen = isGenreDay();
     ['today', 'library', 'played', 'settings'].forEach(function (v) {
-      $('#view-' + v).hidden = v !== name;
+      var twin = $('#view-g-' + v);
+      $('#view-' + v).hidden = v !== name || (genreDeckOpen && !!twin);
+      if (twin) twin.hidden = v !== name || !genreDeckOpen;
     });
     document.querySelectorAll('.tab').forEach(function (t) {
       t.setAttribute('aria-selected', t.dataset.view === name ? 'true' : 'false');
@@ -4917,6 +5608,15 @@
     // The library sizes itself to the window and scrolls its own list; the other
     // views scroll the page normally. This is what lets the CSS tell them apart.
     document.body.dataset.view = name;
+    if (genreDeckOpen) {
+      // Both of its views read what has played lately, which lives in the
+      // database rather than here.
+      if (name === 'library' || name === 'played') genreHistoryForView();
+      if (name === 'library') renderGenreLibrary();
+      else if (name === 'played') renderGenrePlayed();
+      try { location.hash = name; } catch (e) { /* ignore */ }
+      return;
+    }
     renderSidebarGenres();   // the counts mean different things per view
     // Both views read the same genre filter, so the one being switched to has
     // to be redrawn — it may have been filtered from the other.
@@ -4927,11 +5627,12 @@
 
   function render() {
     renderDeckSwitch();
+    if (isGenreDay()) syncGenreDeck();
     renderToday();
     renderLibrary();
     renderPlayed();
     renderSettings();
-    renderSidebarGenres();
+    if (!isGenreDay()) renderSidebarGenres();
   }
 
   function init() {
@@ -4981,6 +5682,7 @@
     wireNeon();
     wirePlaylist();
     wireClassical();
+    wireGenres();
 
     $('#sync-banner').addEventListener('click', function (e) {
       var b = e.target.closest('[data-sync]');

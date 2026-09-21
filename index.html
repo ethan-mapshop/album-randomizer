@@ -26,11 +26,13 @@
 
 <div class="shell">
   <aside class="sidebar">
-    <!-- Two libraries that never mix. Switching changes what every view below
-         is looking at. -->
+    <!-- Three decks that never mix. Switching changes what every view below
+         is looking at. Genres is the odd one: its day comes from Spotify
+         playlists rather than from the album library. -->
     <div class="decks" id="deck-switch" role="tablist" aria-label="Library">
       <button class="deck" type="button" role="tab" data-deck="main">Albums</button>
       <button class="deck" type="button" role="tab" data-deck="classical">Classical</button>
+      <button class="deck" type="button" role="tab" data-deck="genres">Genres</button>
     </div>
 
     <nav class="tabs" role="tablist" aria-orientation="vertical" aria-label="Sections">
@@ -86,6 +88,40 @@
       <button class="btn" id="add-slot">+ One more album</button>
       <span class="dim" id="tail-note"></span>
     </div>
+  </section>
+
+  <!-- ─────────────────── TODAY, GENRE HOURS ─────────────────── -->
+  <section class="view" id="view-g-today" hidden>
+    <div class="day-head">
+      <div class="day-head-main">
+        <p class="day-date" id="g-date"></p>
+        <h2>Genre hours</h2>
+        <p class="day-sub" id="g-sub"></p>
+      </div>
+      <div class="day-actions">
+        <button class="btn btn-primary" id="g-build">Build the day</button>
+        <button class="btn" id="g-send">Send to Spotify</button>
+        <button class="btn" id="g-copy">Copy list</button>
+        <button class="btn btn-quiet" id="g-clear">Start over</button>
+      </div>
+    </div>
+
+    <div class="meter">
+      <div class="meter-bar"><div class="meter-fill" id="g-meter-fill"></div></div>
+      <div class="meter-legend">
+        <span><b id="g-added">0m</b> built<span class="dim" id="g-count"></span></span>
+        <span class="dim">target <b id="g-target"></b></span>
+      </div>
+    </div>
+
+    <p class="hint" id="g-note" hidden></p>
+
+    <div class="fetch-bar" id="g-progress" hidden>
+      <div class="meter-bar"><div class="meter-fill" id="g-fill"></div></div>
+      <p class="dim" id="g-log"></p>
+    </div>
+
+    <div class="hours" id="g-hours"></div>
   </section>
 
   <!-- ───────────────────────── LIBRARY ───────────────────────── -->
@@ -174,6 +210,24 @@
       <p class="dim" id="played-summary"></p>
     </div>
     <div id="played-list"></div>
+  </section>
+
+  <!-- ─────────────────── LIBRARY, GENRE HOURS ─────────────────── -->
+  <section class="view" id="view-g-library" hidden>
+    <div class="view-head">
+      <h2>Genre playlists</h2>
+      <p class="dim" id="g-lib-summary"></p>
+    </div>
+    <div class="grows" id="g-lib-body"></div>
+  </section>
+
+  <!-- ─────────────────── PLAYED, GENRE HOURS ─────────────────── -->
+  <section class="view" id="view-g-played" hidden>
+    <div class="view-head">
+      <h2>Tracks played</h2>
+      <p class="dim" id="g-played-summary"></p>
+    </div>
+    <div id="g-played-body"></div>
   </section>
 
   <!-- ───────────────────────── SETTINGS ───────────────────────── -->
@@ -345,6 +399,27 @@
         <input type="file" id="imp-file" accept=".xlsx,.csv,.tsv,.txt" hidden>
       </div>
       <div id="imp-preview" hidden></div>
+    </div>
+
+    <div class="panel panel-hours">
+      <h3>Genre hours</h3>
+      <p class="dim">A day of whole hours, one genre each, drawn from a Spotify playlist
+        named after that genre &mdash; separate from the albums. Split a genre in the album
+        library, make a playlist with the new name, link it here, and it takes its turn.</p>
+      <label class="field">
+        <span>Hours in a day</span>
+        <span class="field-input"><input type="number" id="set-genre-hours" min="1" max="24" step="1"> hours</span>
+      </label>
+      <label class="field">
+        <span>Leave a track alone for</span>
+        <span class="field-input"><input type="number" id="set-genre-window" min="0" max="3650" step="1"> days</span>
+        <small>A genre without enough fresh tracks to fill an hour falls back to the ones it
+          played longest ago, so no hour comes up short.</small>
+      </label>
+      <div class="btn-row">
+        <button class="btn" id="g-link">Link genre playlists</button>
+      </div>
+      <p class="sp-status" id="g-link-status"></p>
     </div>
 
     <div class="panel">

@@ -1022,3 +1022,56 @@ body[data-sync="loading"] .shell { visibility: hidden; }
   box-shadow: var(--shadow); font-size: 13.5px;
 }
 .sync-banner span { flex: 1 1 260px; min-width: 0; }
+
+/* ── genre hours ──────────────────────────────────────────────────────────
+   A third deck whose day is hours rather than albums. It borrows the day
+   head, the meter and the progress bar; what is new is the hour card, the
+   list of genre playlists and the run of tracks played. */
+body[data-deck="genres"] .side-genres { display: none; }
+body[data-deck="genres"] #genre-form { display: none; }
+.panel-hours { display: none; }
+body[data-deck="genres"] .panel-hours { display: block; }
+
+.hours { display: grid; gap: 10px; }
+.hour {
+  background: var(--bg-raised); border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 14px;
+}
+.hour-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.hour-num {
+  width: 26px; height: 26px; flex: none; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--bg); border: 1px solid var(--line);
+  font-size: 12.5px; color: var(--text-dim);
+}
+.hour-genre {
+  font-weight: 600;
+  color: hsl(var(--h) 70% 68%);
+}
+.hour-note { font-size: 12.5px; }
+.hour-acts { margin-left: auto; display: flex; gap: 6px; }
+.hour-tracks {
+  margin: 10px 0 2px; padding: 0 0 0 4px; list-style: none;
+  display: grid; gap: 3px; font-size: 13px;
+}
+.hour-tracks li { display: flex; gap: 10px; align-items: baseline; }
+.ht-artist { color: var(--text-dim); min-width: 0; flex: 0 1 30%; }
+.ht-name { flex: 1 1 auto; min-width: 0; }
+.ht-len { flex: none; font-variant-numeric: tabular-nums; }
+
+.grows { display: grid; gap: 4px; }
+.grow {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 9px 14px; border-radius: 10px;
+  background: var(--bg-raised); border: 1px solid var(--line);
+}
+.grow.is-next { border-color: color-mix(in srgb, var(--star) 55%, var(--line)); }
+.grow-name { font-weight: 600; color: hsl(var(--h) 70% 68%); flex: 0 0 170px; }
+.grow-pl { flex: 1 1 200px; min-width: 0; }
+.grow-n { flex: 0 0 130px; font-size: 12.5px; text-align: right; }
+
+.gp-day { font-size: 13px; color: var(--text-dim); margin: 18px 0 6px; font-weight: 600; }
+.gp-row { display: flex; gap: 12px; padding: 3px 2px; font-size: 13.5px; }
+.gp-genre { flex: 0 0 140px; color: hsl(var(--h) 70% 68%); }
+.gp-artist { flex: 0 1 30%; color: var(--text-dim); min-width: 0; }
+.gp-title { flex: 1 1 auto; min-width: 0; }

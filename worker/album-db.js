@@ -8,7 +8,7 @@
  *
  * Its address is public, so it is built to be harmless to find:
  *
- *   Database  runs only the four statements below, never SQL a caller sends.
+ *   Database  runs only the statements below, never SQL a caller sends.
  *             Someone could edit the album library — accepted — but not run
  *             arbitrary queries or run up the compute bill.
  *   Spotify   reads only what the app reads, and the one write it will make is
@@ -86,11 +86,33 @@ const SQL = {
     '       (select count(*) from ups)  as upserted,',
     '       (select count(*) from dels) as deleted,',
     '       (select count(*) from mets) as metas'
+  ].join('\n'),
+
+  // A genre hour draws tracks that have not played lately, so it needs the day
+  // each one last played. Its own table rather than the library: these are
+  // tracks from the genre playlists, not albums, and the row count grows with
+  // listening rather than with the library.
+  plays: [
+    'select id, genre, artist, title,',
+    '  floor(extract(epoch from played_at))::bigint as at',
+    'from randomizer.track_plays'
+  ].join('\n'),
+
+  logplays: [
+    'with ins as (',
+    '  insert into randomizer.track_plays (id, genre, artist, title, played_at)',
+    '  select x.id, x.genre, x.artist, x.title, now()',
+    '  from jsonb_to_recordset($1::jsonb) as x(id text, genre text, artist text, title text)',
+    '  on conflict (id) do update set genre = excluded.genre, artist = excluded.artist,',
+    '    title = excluded.title, played_at = now()',
+    '  returning 1',
+    ')',
+    'select count(*) as logged from ins'
   ].join('\n')
 };
 
-// Only a push carries parameters.
-const TAKES_PARAMS = { push: true };
+// Which statements carry parameters.
+const TAKES_PARAMS = { push: true, logplays: true };
 
 async function database(op, request, env) {
   if (TAKES_PARAMS[op] && request.method !== 'POST') {
