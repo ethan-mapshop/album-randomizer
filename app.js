@@ -304,23 +304,33 @@
   // same target to the web player. The album id is the durable half of a stored
   // link, so a URI can be rebuilt whichever field survived.
   function spotifyUri(album) {
-    // A classical work is a playlist, not an album — opening the playlist is
-    // the whole point, and a search for "Bach - 1041" would find nothing.
-    if (album.playlistId) return 'spotify:playlist:' + album.playlistId;
+    // A classical work is neither an album nor, for much longer, a playlist:
+    // its track ids are the recording that was chosen for it, so the first of
+    // them opens that performance. The playlist comes next while those still
+    // exist, and a search for "Bach - 1041" would find nothing at all.
+    if (album.mode === 'classical') {
+      if (album.trackIds && album.trackIds.length) return TRACK_PREFIX + album.trackIds[0];
+      if (album.playlistId) return 'spotify:playlist:' + album.playlistId;
+    }
     var id = album.spotifyId ||
       (String(album.spotifyUrl || '').match(/\/album\/([A-Za-z0-9]+)/) || [])[1];
     return id ? 'spotify:album:' + id : 'spotify:search:' + encodeURIComponent(album.name);
   }
 
+  // The web player takes the same target in path form, so both halves of the
+  // link are decided in one place and cannot drift apart.
+  function spotifyWebUrl(album) {
+    var m = spotifyUri(album).match(/^spotify:(track|album|playlist):([A-Za-z0-9]+)$/);
+    if (m) return 'https://open.spotify.com/' + m[1] + '/' + m[2];
+    return album.spotifyUrl || spotifyUrl(album.name);
+  }
+
   // Both attributes together: a custom scheme hands off to the OS and strands an
   // empty tab when opened with target=_blank, so only web links get one.
   function spotifyLink(album) {
-  // The web link needs the same preference, for a device set to open the
-  // player in a browser rather than the app.
-    var href = state.settings.desktopLinks
-      ? spotifyUri(album)
-      : (album.playlistId ? 'https://open.spotify.com/playlist/' + album.playlistId
-         : (album.spotifyUrl || spotifyUrl(album.name)));
+    // The web link needs the same preference, for a device set to open the
+    // player in a browser rather than the app.
+    var href = state.settings.desktopLinks ? spotifyUri(album) : spotifyWebUrl(album);
     return 'href="' + esc(href) + '"' +
       (href.indexOf('spotify:') === 0 ? '' : ' target="_blank" rel="noopener"');
   }
