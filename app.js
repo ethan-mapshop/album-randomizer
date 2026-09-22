@@ -2858,7 +2858,7 @@
     var head = $('#rh-genre');
     if (head) head.textContent = isClassical() ? 'Period' : 'Genre';
     var sid = $('#rh-spid');
-    if (sid) sid.textContent = isClassical() ? 'Playlist' : 'Spotify ID';
+    if (sid) sid.textContent = isClassical() ? 'Tracks' : 'Spotify ID';
     var side = $('#side-head');
     if (side) side.textContent = isClassical() ? 'Periods' : 'Genres';
     // Two summaries for one header, because the queue counts different things
@@ -3247,14 +3247,20 @@
   // Rows are sorted "Artist - Album", so they read that way too.
   // The id this record is linked by: an album for the album deck, the playlist
   // the work already lived in for the classical one.
+  // A classical work used to point at a playlist of its own, and the column
+  // showed which. The playlists are gone and the track ids are the record, so
+  // what matters now is whether a work has its music and how much of it.
   function spidCell(a) {
-    var cl = a.mode === 'classical';
-    var id = cl ? a.playlistId : a.spotifyId;
-    var tip = id
-      ? (cl ? (a.playlistName || a.name) : (a.matchName || a.name))
-      : (cl ? 'No playlist linked yet' : 'Not linked to Spotify yet');
-    return '<span class="row-spid' + (id ? '' : ' is-blank') + '" title="' + esc(tip) + '">' +
-      (id ? esc(id) : '—') + '</span>';
+    if (a.mode === 'classical') {
+      var n = (a.trackIds || []).length;
+      return '<span class="row-spid' + (n ? '' : ' is-blank') + '" title="' +
+        (n ? esc(n + ' track' + (n === 1 ? '' : 's') + ' stored for this work')
+           : 'No tracks stored — this work cannot be played') + '">' +
+        (n ? n : '—') + '</span>';
+    }
+    return '<span class="row-spid' + (a.spotifyId ? '' : ' is-blank') + '" title="' +
+      esc(a.spotifyId ? (a.matchName || a.name) : 'Not linked to Spotify yet') + '">' +
+      (a.spotifyId ? esc(a.spotifyId) : '—') + '</span>';
   }
 
   function rowName(a) {
@@ -4726,67 +4732,15 @@
   }
 
   function classicalStats() {
-    var have = 0, timed = 0, tracked = 0, linked = 0;
+    var have = 0, timed = 0, tracked = 0;
     state.library.forEach(function (a) {
       if (a.mode !== 'classical') return;
       have++;
       if (a.minutes) timed++;
       if (a.trackIds && a.trackIds.length) tracked++;
-      if (a.playlistId) linked++;
     });
     var avail = (typeof CLASSICAL !== 'undefined' && CLASSICAL.works) ? CLASSICAL.works.length : 0;
-    return { have: have, available: avail, timed: timed, tracked: tracked, linked: linked };
-  }
-
-  // One pass over the account's own playlists turns the names the export gave
-  // us into ids. About twenty calls for the whole library, and it is a read —
-  // the endpoint that already works — so it does not wait on anything else.
-  async function linkClassicalPlaylists(onStep) {
-    // Two keys per playlist. The exact name settles almost all of them; the
-    // folded one catches the rest, because the names we hold arrived as
-    // filenames and a filename cannot hold a colon or keep a double space.
-    // "Telemann - 55:a2" reached us as "Telemann - 55a2".
-    function foldName(s) {
-      return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '');
-    }
-    var byName = {}, byFold = {}, foldClash = {}, offset = 0, seen = 0;
-    for (;;) {
-      onStep('Reading your playlists — ' + seen + ' so far…');
-      var j = await spUser('GET', '/me/playlists?limit=50&offset=' + offset);
-      var items = (j && j.items) || [];
-      items.forEach(function (p) {
-        if (!p || !p.name) return;
-        byName[String(p.name).trim().toLowerCase()] = p.id;
-        var f = foldName(p.name);
-        if (byFold[f] && byFold[f] !== p.id) foldClash[f] = true;
-        else byFold[f] = p.id;
-      });
-      seen += items.length;
-      if (!items.length || !j.next) break;
-      offset += items.length;
-    }
-
-    // The name came from the export rather than from the catalogue, so this is
-    // a lookup rather than the scoring the works themselves needed.
-    var linked = 0, already = 0, missing = [], ambiguous = [];
-    state.library.forEach(function (a) {
-      if (a.mode !== 'classical' || !a.playlistName) return;
-      var id = byName[String(a.playlistName).trim().toLowerCase()];
-      if (!id) {
-        var f = foldName(a.playlistName);
-        // Never choose between two playlists that fold to the same key.
-        if (foldClash[f]) { ambiguous.push(a.playlistName); return; }
-        id = byFold[f];
-      }
-      if (!id) { missing.push(a.playlistName); return; }
-      if (a.playlistId === id) { already++; return; }
-      a.playlistId = id;
-      linked++;
-    });
-    save();
-    render();
-    return { linked: linked, already: already, missing: missing,
-             ambiguous: ambiguous, seen: seen };
+    return { have: have, available: avail, timed: timed, tracked: tracked };
   }
 
   function renderClassicalStatus() {
@@ -4797,7 +4751,8 @@
       ? 'classical.js did not load, so there is nothing to import.'
       : s.have
         ? s.have + ' of ' + s.available + ' works · ' + s.timed + ' timed · ' +
-          s.tracked + ' with tracks · ' + s.linked + ' linked to their playlist'
+          s.tracked + ' with tracks' +
+          (s.tracked < s.have ? ' · ' + (s.have - s.tracked) + ' with none, so unplayable' : '')
         : 'Not loaded yet — the classical deck is empty.';
   }
 
@@ -4877,24 +4832,6 @@
   function wireClassical() {
     $('#cl-import').addEventListener('click', importClassical);
 
-    $('#cl-link').addEventListener('click', function () {
-      if (!spLinked()) { toast('Connect your Spotify account first.'); return; }
-      var box = $('#cl-status');
-      var btn = $('#cl-link');
-      btn.disabled = true;
-      linkClassicalPlaylists(function (msg) { box.textContent = msg; }).then(function (r) {
-        btn.disabled = false;
-        var bits = ['looked at ' + r.seen + ' playlists', r.linked + ' newly linked'];
-        if (r.already) bits.push(r.already + ' already were');
-        if (r.ambiguous.length) bits.push(r.ambiguous.length + ' too alike to choose');
-        if (r.missing.length) bits.push(r.missing.length + ' not found: ' + r.missing.slice(0, 4).join(', '));
-        box.textContent = bits.join(' · ');
-        toast('Linked ' + r.linked + ' playlists.');
-      }, function (err) {
-        btn.disabled = false;
-        box.textContent = 'Stopped: ' + rateNote(err);
-      });
-    });
     $('#form-mins').addEventListener('change', function (e) {
       var f = e.target.dataset.form;
       if (!f) return;
