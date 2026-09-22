@@ -38,6 +38,9 @@
     <nav class="tabs" role="tablist" aria-orientation="vertical" aria-label="Sections">
       <button class="tab" role="tab" data-view="today">Today</button>
       <button class="tab" role="tab" data-view="library">Library</button>
+      <!-- Records waiting to join the library: the same view over a different
+           set, so it only makes sense on the album deck. -->
+      <button class="tab tab-new" role="tab" data-view="new">New albums</button>
       <button class="tab" role="tab" data-view="played">Played</button>
       <button class="tab" role="tab" data-view="settings">Settings</button>
     </nav>
@@ -169,6 +172,7 @@
           placeholder="—" aria-label="Release year"> yr</label>
         <label class="numbox numbox-rym"><input type="number" id="add-rym" min="0" max="5" step="any"
           placeholder="—" aria-label="RateYourMusic score"> rym</label>
+        <input type="date" id="add-date" class="add-date" aria-label="Release date">
         <label class="mins"><input type="number" id="add-mins" min="1" max="300" placeholder="—"> min</label>
         <label class="check"><input type="checkbox" id="add-fav"> Favorite</label>
         <button class="btn btn-primary" type="submit">Add</button>
@@ -192,6 +196,7 @@
         <span class="row-genre" id="rh-genre">Genre</span>
         <span class="row-form">Form</span>
         <span class="row-year">Year</span>
+        <span class="row-date">Released</span>
         <span class="row-rym">RYM</span>
         <span class="row-len">Length</span>
         <span class="row-tracks">Tracks</span>

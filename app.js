@@ -28,9 +28,16 @@
   function deck() { return state.decks[state.mode] || state.decks.main; }
   function isClassical() { return state.mode === 'classical'; }
 
-  // Only classical records carry a mode, so the album library needed no
-  // migration when this arrived.
-  function inMode(a) { return (a.mode === 'classical') === isClassical(); }
+  // An album deck record carries no mode at all, which is what made decks
+  // possible without migrating anything. Everything since says what it is:
+  // "classical" for a work, "new" for a record waiting to join the library.
+  function inMode(a) { return (a.mode || 'main') === state.mode; }
+
+  // New albums are a scope within the album deck rather than a deck of their
+  // own: same rows, same editor, same Spotify lookup, over the records that
+  // have not been let into the library yet.
+  var newView = false;
+  function isNewAlbums() { return newView; }
 
   /* ───────────────────────────── state ───────────────────────────── */
 
@@ -111,8 +118,11 @@
       matchName: s.sp ? (s.matchName || ((s.artist ? s.artist + ' - ' : '') + s.title)) : null,
       match: s.match || (s.sp ? 'auto' : null),
       candidates: null,
-      mode: s.mode === 'classical' ? 'classical' : null,
+      mode: s.mode === 'classical' || s.mode === 'new' ? s.mode : null,
       form: s.form || null,
+      // Queued records are ordered by the day they came out, which is more
+      // than the library keeps: it only ever needed the year.
+      releaseDate: s.releaseDate || null,
       trackIds: (s.trackIds && s.trackIds.length) ? s.trackIds.slice() : null,
       playlistName: s.playlistName || null,
       playlistId: s.playlistId || null
@@ -768,7 +778,8 @@
         out[al.id] = {
           ms: ms,
           tracks: al.total_tracks,
-          url: (al.external_urls && al.external_urls.spotify) || null
+          url: (al.external_urls && al.external_urls.spotify) || null,
+          releaseDate: al.release_date || null
         };
         if (al.tracks && al.tracks.total > items.length) {
           extra.push({ id: al.id, offset: items.length, total: al.tracks.total });
@@ -822,6 +833,12 @@
     album.spotifyUrl = info.url || (item.external_urls && item.external_urls.spotify) || album.spotifyUrl || null;
     album.matchName = artistsOf(item) + ' - ' + item.name;
     album.tracks = info.tracks || item.total_tracks || null;
+    // A queued record is filed by release date, and both the search result
+    // and the details call carry one. The library keeps a year instead, and
+    // gets it when the record migrates.
+    if (album.mode === 'new') {
+      album.releaseDate = fullDate(info.releaseDate || item.release_date) || album.releaseDate;
+    }
     album.candidates = null;
   }
 
@@ -1555,6 +1572,10 @@
     if (a.fav) o.fav = 1;
     if (a.played) { o.played = 1; if (a.playedAt) o.playedAt = a.playedAt; }
     if (a.custom) o.custom = 1;
+    if (a.mode === 'new') {
+      o.mode = 'new';
+      if (a.releaseDate) o.releaseDate = a.releaseDate;
+    }
     if (a.mode === 'classical') {
       o.mode = 'classical';
       if (a.form) o.form = a.form;
@@ -2830,6 +2851,7 @@
     if (isGenreDay()) return renderGenreLibrary();
     var lib = state.library.filter(inMode);
     var played = lib.filter(function (a) { return a.played; }).length;
+    var queued = state.library.filter(function (a) { return a.mode === 'new'; });
     // A classical record is a work, not an album, and calling it one reads as a
     // bug the moment the deck holds 616 of them.
     var noun = isClassical() ? ' works · ' : ' albums · ';
@@ -2839,8 +2861,16 @@
     if (sid) sid.textContent = isClassical() ? 'Playlist' : 'Spotify ID';
     var side = $('#side-head');
     if (side) side.textContent = isClassical() ? 'Periods' : 'Genres';
-    $('#library-summary').textContent = lib.length + noun + (lib.length - played) +
-      ' unplayed · ' + lib.filter(function (a) { return a.fav; }).length + ' favorites';
+    // Two summaries for one header, because the queue counts different things
+    // — nothing in it is played, and none of it has a genre yet.
+    var waiting = queued.filter(function (a) { return !a.releaseDate; }).length;
+    $('#library-summary').textContent = isNewAlbums()
+      ? queued.length + ' waiting · oldest release first' +
+        (waiting ? ' · ' + waiting + ' with no date yet' : '')
+      : lib.length + noun + (lib.length - played) +
+        ' unplayed · ' + lib.filter(function (a) { return a.fav; }).length + ' favorites';
+    var libHead = $('#view-library').querySelector('.view-head h2');
+    if (libHead) libHead.textContent = isNewAlbums() ? 'New albums' : 'Library';
 
     // Only decades that actually hold albums, so the list never offers an empty
     // span. Rebuilt with the library because entering years can introduce one;
@@ -2943,6 +2973,41 @@
     var n = Number(t);
     if (isNaN(n) || n < 0 || n > 5) return null;
     return Math.round(n * 100) / 100;
+  }
+
+  // Spotify gives a release date to whatever precision it knows: a day, a
+  // month, or just a year. Sorting and display both have to cope with all
+  // three, so anything short is padded rather than rejected.
+  function fullDate(d) {
+    var s = String(d || '');
+    if (/^\d{4}$/.test(s)) return s + '-01-01';
+    if (/^\d{4}-\d{2}$/.test(s)) return s + '-01';
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+  }
+
+  function fmtDate(d) {
+    var full = fullDate(d);
+    return full ? shortDate(full) : '—';
+  }
+
+  function yearOf(d) {
+    var full = fullDate(d);
+    return full ? +full.slice(0, 4) : null;
+  }
+
+  // What genre this artist already sits in, for a record about to join the
+  // library. The commonest one rather than the first: a band that wandered
+  // across two genres should land where most of it lives.
+  function suggestGenre(artist) {
+    var want = searchFold(artist);
+    if (!want) return null;
+    var tally = {}, best = null;
+    state.library.forEach(function (a) {
+      if (a.mode || !a.genre || searchFold(a.artist) !== want) return;
+      tally[a.genre] = (tally[a.genre] || 0) + 1;
+      if (!best || tally[a.genre] > tally[best]) best = a.genre;
+    });
+    return best;
   }
 
   function fmtRym(v) {
@@ -3204,13 +3269,19 @@
       '<form class="row-edit" data-act="save">' +
         '<input type="text" class="edit-artist" value="' + esc(a.artist || '') + '" placeholder="Artist">' +
         '<input type="text" class="edit-title" value="' + esc(a.title || a.name) + '" placeholder="Album" required>' +
-        '<select class="edit-genre">' + deck().genres.map(function (g) {
-          return '<option value="' + esc(g) + '"' + (g === a.genre ? ' selected' : '') + '>' + esc(g) + '</option>';
-        }).join('') + '</select>' +
+        // A queued record has no genre yet: that is the decision migrating
+        // it makes, so the editor does not ask for one early.
+        (a.mode === 'new' ? '' :
+          '<select class="edit-genre">' + deck().genres.map(function (g) {
+            return '<option value="' + esc(g) + '"' + (g === a.genre ? ' selected' : '') + '>' + esc(g) + '</option>';
+          }).join('') + '</select>') +
         // A classical work has a form and no release year or score, so the
         // editor offers what the record actually has rather than three boxes
         // that will always be blank.
-        (a.mode === 'classical'
+        (a.mode === 'new'
+          ? '<input type="date" class="edit-date" aria-label="Release date"' +
+              ' value="' + esc(fullDate(a.releaseDate)) + '">'
+          : a.mode === 'classical'
           ? '<select class="edit-form" aria-label="Form">' +
               // A form the settings no longer list is still this work's form.
               // Without it here the browser would show the first option and
@@ -3249,6 +3320,41 @@
 
   // Shown for albums Spotify could not resolve confidently: the runners-up,
   // labelled with why each is doubtful, so picking one is a single click.
+  // The row a record sits in while it is being let into the library. The
+  // genre is the only thing to decide; the year follows from the release
+  // date, which is the whole reason the queue keeps one.
+  var migratingId = null;
+
+  function migrateRow(a) {
+    var guess = suggestGenre(a.artist);
+    var year = yearOf(a.releaseDate);
+    return '<div class="row is-editing" data-id="' + esc(a.id) + '">' +
+      '<form class="row-edit" data-act="migrate">' +
+        '<span class="row-name">' + rowName(a) + '</span>' +
+        '<select class="migrate-genre" aria-label="Genre">' + deck().genres.map(function (g) {
+          return '<option value="' + esc(g) + '"' + (g === guess ? ' selected' : '') +
+            '>' + esc(g) + '</option>';
+        }).join('') + '</select>' +
+        '<span class="dim migrate-note">' +
+          (guess ? 'Other ' + esc(a.artist) + ' albums are in ' + esc(guess) + '. ' : '') +
+          (year ? 'Release year will be ' + year + '.' : 'No release date, so no year.') +
+        '</span>' +
+        '<button class="btn btn-primary" type="submit">Move to library</button>' +
+        '<button class="btn btn-quiet" type="button" data-act="cancel-migrate">Cancel</button>' +
+      '</form></div>';
+  }
+
+  // One way only: the record stops being queued, takes the genre it was
+  // given and the year its release date implies, and is thereafter an
+  // ordinary album. The date stays on it as the thing it arrived with.
+  function migrate(a, genre) {
+    a.genre = genre;
+    a.year = yearOf(a.releaseDate);
+    a.mode = null;
+    a.played = false;
+    a.playedAt = null;
+  }
+
   function candidatePicker(a) {
     if (!a.candidates || !a.candidates.length) return '';
     // Three ways to get here: the run was unsure, the run found nothing, or you
@@ -3295,6 +3401,21 @@
     var band = $('#lib-rym').value ? rymBandsShown[+$('#lib-rym').value - 1] : null;
     var decade = $('#lib-decade').value ? +$('#lib-decade').value : null;
     var len = $('#lib-length').value ? LENGTH_BANDS[+$('#lib-length').value - 1] : null;
+
+    // The queue is its own list: no genre, no score, nothing played, and
+    // ordered by release date rather than by artist. Only the search box
+    // applies to it, so the rest of the filters are left out entirely.
+    if (isNewAlbums()) {
+      return state.library.filter(function (a) {
+        return a.mode === 'new' && (!q || foldedName(a).indexOf(q) > -1);
+      }).sort(function (x, y) {
+        var dx = fullDate(x.releaseDate), dy = fullDate(y.releaseDate);
+        // Oldest first, because the oldest is the one most overdue a
+        // listen. A record with no date yet waits at the end.
+        if (!dx || !dy) return dx ? -1 : dy ? 1 : byArtistThenYear(x, y);
+        return dx === dy ? byArtistThenYear(x, y) : (dx < dy ? -1 : 1);
+      });
+    }
 
     var matches = state.library.filter(function (a) {
       if (!inMode(a)) return false;
@@ -3344,7 +3465,8 @@
         deck().genres.map(function (g) {
           return '<option value="' + esc(g) + '">' + esc(g) + '</option>';
         }).join('') + '</select>' +
-      '<button class="btn" type="button" data-bulk="move"' + off + '>Move</button>' +
+      '<button class="btn" type="button" data-bulk="move"' + off + '>' +
+        (isNewAlbums() ? 'Move to library' : 'Move') + '</button>' +
       '<span class="bulk-sep"></span>' +
       BULK_ICONS.map(function (b) {
         return '<button class="bulk-icon' + (b[0] === 'delete' ? ' del' : '') +
@@ -3370,9 +3492,13 @@
     var shown = matches.slice(0, libLimit);
     var box = $('#lib-rows');
     if (!matches.length) {
-      box.innerHTML = '<p class="row-empty">No albums match.</p>';
+      box.innerHTML = '<p class="row-empty">' +
+        (isNewAlbums() && !$('#lib-search').value
+          ? 'Nothing waiting. Add an album and it queues here until you move it in.'
+          : 'No albums match.') + '</p>';
     } else {
       box.innerHTML = shown.map(function (a) {
+        if (a.id === migratingId) return migrateRow(a);
         if (a.id === editingId) return editRow(a);
         return '<div class="row' + (a.played ? ' is-played' : '') +
           (selected[a.id] ? ' is-picked' : '') + '" data-id="' + esc(a.id) + '"' +
@@ -3393,6 +3519,8 @@
             esc(a.form || '—') + '</span>' +
           '<span class="row-year' + (a.year ? '' : ' is-blank') + '" title="Release year">' +
             (a.year || '—') + '</span>' +
+          '<span class="row-date' + (a.releaseDate ? '' : ' is-blank') + '" title="Release date">' +
+            esc(fmtDate(a.releaseDate)) + '</span>' +
           '<span class="row-rym' + (a.rym ? '' : ' is-blank') + '" title="RateYourMusic score">' +
             fmtRym(a.rym) + '</span>' +
           '<span class="row-len' + (a.minutes ? (a.approx ? ' is-approx' : '') : ' is-guess') + '"' +
@@ -3412,6 +3540,9 @@
             '<a ' + spotifyLink(a) +
               ' title="' + (a.spotifyUrl ? 'Open in Spotify' : 'Search Spotify') +
               '" style="text-decoration:none">↗</a>' +
+            (isNewAlbums()
+              ? '<button type="button" data-act="migrate" class="go" title="Move this into the library">⇥</button>'
+              : '') +
             '<button type="button" data-act="edit" title="Edit artist, album, genre, year, score, tracks or runtime">✎</button>' +
             '<button type="button" data-act="del" class="del" title="Delete">✕</button>' +
           '</span></div>';
@@ -3511,6 +3642,16 @@
     if (action === 'move') {
       var genre = $('#bulk-genre').value;
       if (!genre) return;
+      // The same button, one step further along on the queue: these records
+      // are not being moved between genres but into the library.
+      if (isNewAlbums()) {
+        albums.forEach(function (a) { migrate(a, genre); });
+        selected = {}; lastPicked = null;
+        save();
+        render();
+        toast(word + ' joined ' + genre + '.');
+        return;
+      }
       albums.forEach(function (a) { a.genre = genre; });
       save();
       render();
@@ -3597,6 +3738,17 @@
         renderRows();
         return;
       }
+      if (act === 'migrate') {
+        migratingId = a.id;
+        editingId = null;
+        renderRows();
+        return;
+      }
+      if (act === 'cancel-migrate') {
+        migratingId = null;
+        renderRows();
+        return;
+      }
 
       // Ask Spotify what else it has under this name. Reuses the review picker
       // wholesale — same candidate rows, same pick handler — so choosing a
@@ -3677,6 +3829,20 @@
     });
 
     $('#lib-rows').addEventListener('submit', function (e) {
+      var moving = e.target.closest('form[data-act="migrate"]');
+      if (moving) {
+        e.preventDefault();
+        var rec = byId(moving.closest('.row').dataset.id);
+        var genre = moving.querySelector('.migrate-genre').value;
+        if (!rec || !genre) return;
+        migrate(rec, genre);
+        migratingId = null;
+        save();
+        render();
+        toast('“' + rec.name + '” joined ' + genre +
+          (rec.year ? ' · ' + rec.year : '') + '.', 4000);
+        return;
+      }
       var form = e.target.closest('form[data-act="save"]');
       if (!form) return;
       e.preventDefault();
@@ -3697,11 +3863,17 @@
       a.artist = artist;
       a.title = title;
       a.name = name;
-      a.genre = form.querySelector('.edit-genre').value;
-      // Whichever pair the editor offered for this deck is the pair it reads back.
+      var genreSel = form.querySelector('.edit-genre');
+      if (genreSel) a.genre = genreSel.value;
+      // Whichever set the editor offered for this record is the set it reads
+      // back: a form for a work, a release date for a queued album, a year
+      // and a score for one in the library.
       var formSel = form.querySelector('.edit-form');
+      var dateBox = form.querySelector('.edit-date');
       if (formSel) {
         a.form = formSel.value;
+      } else if (dateBox) {
+        a.releaseDate = fullDate(dateBox.value) || null;
       } else {
         a.year = parseYear(form.querySelector('.edit-year').value);
         a.rym = parseRym(form.querySelector('.edit-rym').value);
@@ -3865,6 +4037,25 @@
       if (byId(id)) { toast('That album is already in the library.'); return; }
       var mins = parseMinutes($('#add-mins').value);
       var genre = $('#add-genre').value;
+      // Queued by hand: a date and a name are all it has until a lookup or a
+      // migration fills the rest in.
+      if (isNewAlbums()) {
+        state.library.push({
+          id: id, name: name, artist: artist, title: title,
+          genre: '', fav: false, minutes: mins, approx: false,
+          played: false, playedAt: null, custom: true,
+          mode: 'new', releaseDate: fullDate($('#add-date').value) || null,
+          year: null, rym: null
+        });
+        save();
+        $('#add-artist').value = '';
+        $('#add-title').value = '';
+        $('#add-mins').value = '';
+        $('#add-artist').focus();
+        renderLibrary();
+        toast('Queued “' + name + '”');
+        return;
+      }
       // A work added to the classical deck needs a form, or it has no length
       // estimate and draws at the album fallback instead.
       var cl = isClassical();
@@ -5626,8 +5817,11 @@
     renderDeckSwitch();
     render();
     // The genre deck has its own Today, Library and Played, so the view has to
-    // be shown again rather than only redrawn.
-    show(document.body.dataset.view || 'today');
+    // be shown again rather than only redrawn. New albums belong to the album
+    // deck alone, so leaving it lands on the library.
+    var view = document.body.dataset.view || 'today';
+    if (isNewAlbums()) view = state.mode === 'main' ? 'new' : 'library';
+    show(view);
   }
 
   function applyTheme() {
@@ -5647,20 +5841,26 @@
   }
 
   function show(name) {
+    // New albums borrow the library outright — the same section, rows and
+    // editor over a different set of records — so the view underneath is
+    // the library and a second attribute says which list is in it.
+    newView = name === 'new';
+    var section = newView ? 'library' : name;
+    document.body.dataset.scope = newView ? 'new' : '';
     // Today, Library and Played each have a genre-deck twin; Settings is
     // shared, with the panels that do not apply hidden by the deck.
     var genreDeckOpen = isGenreDay();
     ['today', 'library', 'played', 'settings'].forEach(function (v) {
       var twin = $('#view-g-' + v);
-      $('#view-' + v).hidden = v !== name || (genreDeckOpen && !!twin);
-      if (twin) twin.hidden = v !== name || !genreDeckOpen;
+      $('#view-' + v).hidden = v !== section || (genreDeckOpen && !!twin);
+      if (twin) twin.hidden = v !== section || !genreDeckOpen;
     });
     document.querySelectorAll('.tab').forEach(function (t) {
       t.setAttribute('aria-selected', t.dataset.view === name ? 'true' : 'false');
     });
     // The library sizes itself to the window and scrolls its own list; the other
     // views scroll the page normally. This is what lets the CSS tell them apart.
-    document.body.dataset.view = name;
+    document.body.dataset.view = section;
     if (genreDeckOpen) {
       // Both of its views read what has played lately, which lives in the
       // database rather than here.
@@ -5673,7 +5873,7 @@
     renderSidebarGenres();   // the counts mean different things per view
     // Both views read the same genre filter, so the one being switched to has
     // to be redrawn — it may have been filtered from the other.
-    if (name === 'library') renderRows();
+    if (section === 'library') renderLibrary();
     else if (name === 'played') renderPlayed();
     try { location.hash = name; } catch (e) { /* ignore */ }
   }
@@ -5759,7 +5959,9 @@
       render();
       save();
       var hash = (location.hash || '').replace('#', '');
-      show(['today', 'library', 'played', 'settings'].indexOf(hash) > -1 ? hash : 'today');
+      var known = ['today', 'library', 'new', 'played', 'settings'].indexOf(hash) > -1;
+      // The queue belongs to the album deck, so a link to it opens there.
+      show(known && (hash !== 'new' || state.mode === 'main') ? hash : 'today');
 
       // A sign-in comes back as a redirect to this same page, so its reply is
       // already sitting in the address bar by the time the app loads.

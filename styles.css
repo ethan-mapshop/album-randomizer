@@ -1075,3 +1075,44 @@ body[data-deck="genres"] .panel-hours { display: block; }
 .gp-genre { flex: 0 0 140px; color: hsl(var(--h) 70% 68%); }
 .gp-artist { flex: 0 1 30%; color: var(--text-dim); min-width: 0; }
 .gp-title { flex: 1 1 auto; min-width: 0; }
+
+/* ── new albums ───────────────────────────────────────────────────────────
+   The library view over the records that have not joined it yet. What is
+   different is what is missing: no genre, no score, no year, nothing played.
+   The date column is the one thing it adds, and it is the sort order. */
+/* The header and the rows have to agree on this one too, so it takes its
+   width the same way the rest do. */
+#view-library { --col-date: 104px; }
+#lib-rows .row-date, .row-head .row-date { width: var(--col-date); }
+.row-date { display: none; font-size: 13px; color: var(--text-dim); }
+.add-date, .tab-new { display: none; }
+body[data-deck="main"] .tab-new { display: block; }
+
+body[data-scope="new"] .row-date { display: block; }
+body[data-scope="new"] .add-date { display: inline-block; }
+/* #lib-rows .row-genre sets display:flex, so hiding it here has to carry the
+   same id to win. */
+body[data-scope="new"] #lib-rows .row-genre,
+body[data-scope="new"] .row-head .row-genre,
+body[data-scope="new"] .row-year,
+body[data-scope="new"] .row-rym,
+body[data-scope="new"] .row-form,
+body[data-scope="new"] .side-genres,
+body[data-scope="new"] #lib-genre,
+body[data-scope="new"] #lib-rym,
+body[data-scope="new"] #lib-decade,
+body[data-scope="new"] #lib-status,
+body[data-scope="new"] #add-genre,
+body[data-scope="new"] .numbox-year,
+body[data-scope="new"] .numbox-rym,
+body[data-scope="new"] .add-form .check { display: none; }
+
+/* The one row action the library has no use for. */
+.row-tools .go { color: var(--star); font-size: 15px; }
+.migrate-genre { flex: 0 0 auto; }
+.migrate-note { flex: 1 1 200px; min-width: 0; font-size: 12.5px; }
+
+@media (max-width: 720px) {
+  /* Folded rows have no columns to line up with. */
+  #lib-rows .row-date { width: auto; }
+}
