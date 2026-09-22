@@ -398,9 +398,43 @@
 
   var BASE_PACE = 700;      // ms between any two catalogue calls
   var MAX_PACE = 4000;      // ceiling once Spotify has pushed back
-  // Retry-After is not CORS-exposed, so a browser cannot read it. These are
-  // deliberate long waits rather than guesses at a header we cannot see.
+  // Spotify does not expose Retry-After to a page, but the relay passes it
+  // through and does, so a call through the relay knows how long the door is
+  // shut. These waits are the blind fallback for a browser calling Spotify
+  // directly.
   var RATE_WAITS = [30000, 60000, 120000, 240000];
+  // Past this, waiting is not a pause but a lockout — Spotify answers a burst
+  // of reads with the better part of a day. Retrying through that only adds
+  // calls to something already refusing them, so it is reported instead.
+  var RATE_MAX_WAIT = 300000;
+
+  // How long to wait on a 429, and an error carrying that when it is too long
+  // to sit through. Callers pass it to rateNote for something a person can act
+  // on: "about 23 hours" is a different day, "40 seconds" is a coffee.
+  function rateWait(r, attempt) {
+    var header = Number(r.headers.get('Retry-After'));
+    if (header > 0) return header * 1000;
+    return RATE_WAITS[Math.min(attempt, RATE_WAITS.length - 1)];
+  }
+
+  function rateError(waitMs) {
+    var err = new Error('RATE_LIMIT');
+    err.retryMs = waitMs || 0;
+    return err;
+  }
+
+  function rateNote(err) {
+    if (err.message !== 'RATE_LIMIT') return err.message;
+    if (!err.retryMs) return 'Spotify is rate-limiting this app — try again later.';
+    var mins = Math.round(err.retryMs / 60000);
+    var when = new Date(Date.now() + err.retryMs);
+    var howLong = mins < 90
+      ? 'about ' + mins + ' minute' + (mins === 1 ? '' : 's')
+      : 'about ' + Math.round(mins / 60) + ' hours';
+    return 'Spotify is rate-limiting this app for ' + howLong + ' — nothing will get ' +
+      'through until ' + when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) +
+      (when.toDateString() === new Date().toDateString() ? '' : ' tomorrow') + '.';
+  }
   var SEARCH_LIMIT = 10;    // /v1/search caps limit at 10; anything higher is a 400
   var ALBUM_BATCH = 20;     // /v1/albums accepts at most 20 ids per call
   var AUTO_AT = 0.9;        // score at or above this is accepted without asking
@@ -533,10 +567,8 @@
 
         if (r.status === 429) {
           slowDown();
-          if (attempt >= RATE_WAITS.length) {
-            throw new Error('RATE_LIMIT');
-          }
-          var wait = RATE_WAITS[attempt];
+          var wait = rateWait(r, attempt);
+          if (wait > RATE_MAX_WAIT || attempt >= RATE_WAITS.length) throw rateError(wait);
           showWait('Rate-limited by Spotify — waiting ' + Math.round(wait / 1000) +
             's before trying again. Progress is saved.');
           return again(wait, false);
@@ -915,8 +947,8 @@
         streak = 0;
       } catch (e) {
         if (String(e.message) === 'RATE_LIMIT') {
-          stats.fatal = 'Spotify is rate-limiting this app. Everything found so far is saved — ' +
-            'wait about 15 minutes, then press Look up again to carry on.';
+          stats.fatal = rateNote(e) + ' Everything found so far is saved — press Look up ' +
+            'again after that to carry on.';
           stats.rateLimited = true;
           break;
         }
@@ -1143,8 +1175,9 @@
         }
         if (r.status === 429) {
           slowDown();
-          if (attempt >= RATE_WAITS.length) throw new Error('RATE_LIMIT');
-          return again(RATE_WAITS[attempt]);
+          var wait = rateWait(r, attempt);
+          if (wait > RATE_MAX_WAIT || attempt >= RATE_WAITS.length) throw rateError(wait);
+          return again(wait);
         }
         if (RETRY_STATUS[r.status] && attempt < MAX_ATTEMPTS) return again(backoff(attempt));
         if (!r.ok) {
@@ -1405,8 +1438,7 @@
     }, function (err) {
       playlistBusy = false;
       renderBulkBar();
-      toast('Could not send: ' + (err.message === 'RATE_LIMIT'
-        ? 'Spotify is rate-limiting this app — try again later.' : err.message), 9000);
+      toast('Could not send: ' + rateNote(err), 9000);
     });
   }
 
@@ -1488,10 +1520,7 @@
       }, function (err) {
         playlistBusy = false;
         btn.disabled = false;
-        var msg = err.message === 'RATE_LIMIT'
-          ? 'Spotify is rate-limiting this app — wait a while and try again.'
-          : err.message;
-        note.textContent = 'Stopped: ' + msg;
+        note.textContent = 'Stopped: ' + rateNote(err);
         toast('Could not write the playlist.');
       });
     });
@@ -3741,7 +3770,7 @@
           render();
           toast(name + ' · ' + got.ids.length + ' tracks · ' + fmt(a.minutes));
         }, function (err) {
-          toast('Linked, but could not read the playlist: ' + err.message);
+          toast('Linked, but could not read the playlist: ' + rateNote(err));
         });
         return;
       }
@@ -3759,7 +3788,7 @@
           render();
           toast(name + ' · ' + (a.approx ? '~' : '') + fmt(a.minutes));
         }, function (err) {
-          toast('Linked, but could not read its length: ' + err.message);
+          toast('Linked, but could not read its length: ' + rateNote(err));
         });
       }
     });
@@ -3808,7 +3837,7 @@
         finish(stats.fatal ? stats.fatal + ' (' + summary + ' this run)' : 'Finished — ' + summary + '.');
         toast(stats.fatal ? 'Stopped: ' + stats.fatal : summary + '.');
       }, function (err) {
-        finish('Stopped: ' + err.message);
+        finish('Stopped: ' + rateNote(err));
         toast('Stopped: ' + err.message);
       });
     });
@@ -4672,8 +4701,7 @@
         toast('Linked ' + r.linked + ' playlists.');
       }, function (err) {
         btn.disabled = false;
-        box.textContent = 'Stopped: ' + (err.message === 'RATE_LIMIT'
-          ? 'Spotify is rate-limiting this app — try again later.' : err.message);
+        box.textContent = 'Stopped: ' + rateNote(err);
       });
     });
     $('#form-mins').addEventListener('change', function (e) {
@@ -5458,8 +5486,7 @@
         genreBusy = false;
         genreStep('');
         renderGenreToday();
-        toast(err.message === 'RATE_LIMIT'
-          ? 'Spotify is rate-limiting this app — try again later.' : err.message, 6000);
+        toast(rateNote(err), 6000);
       });
     });
 
@@ -5479,7 +5506,7 @@
         genreBusy = false;
         genreStep('');
         renderGenreToday();
-        toast(err.message, 6000);
+        toast(rateNote(err), 6000);
       });
     });
 
@@ -5515,7 +5542,7 @@
       }, function (err) {
         genreBusy = false;
         renderGenreToday();
-        toast(err.message, 5000);
+        toast(rateNote(err), 5000);
       });
     });
 
@@ -5535,8 +5562,7 @@
       }, function (err) {
         btn.disabled = false;
         genreBusy = false;
-        box.textContent = 'Stopped: ' + (err.message === 'RATE_LIMIT'
-          ? 'Spotify is rate-limiting this app — try again later.' : err.message);
+        box.textContent = 'Stopped: ' + rateNote(err);
       });
     });
 
