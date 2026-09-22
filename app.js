@@ -2142,6 +2142,14 @@
 
   // The favourites pool deliberately ignores played, so a favourite can come
   // round again any day. A genre pool still retires what it has served.
+  // The forms on offer, plus whatever this record already says, so a pick list
+  // can never be the reason a value changes.
+  function formChoices(current) {
+    var forms = Object.keys(state.settings.formMinutes || {}).sort();
+    if (current && forms.indexOf(current) === -1) forms.push(current);
+    return forms;
+  }
+
   // What to assume a record runs to when nothing has measured it. A classical
   // work answers from its form; everything else falls back to the one number.
   function estimateFor(a) {
@@ -3175,7 +3183,10 @@
         // that will always be blank.
         (a.mode === 'classical'
           ? '<select class="edit-form" aria-label="Form">' +
-              Object.keys(state.settings.formMinutes || {}).sort().map(function (f) {
+              // A form the settings no longer list is still this work's form.
+              // Without it here the browser would show the first option and
+              // saving would quietly write that instead.
+              formChoices(a.form).map(function (f) {
                 return '<option value="' + esc(f) + '"' + (f === a.form ? ' selected' : '') +
                   '>' + esc(f) + '</option>';
               }).join('') + '</select>'
@@ -3709,17 +3720,23 @@
       toast('Saved “' + name + '”');
 
       // A relinked work takes its tracks and its runtime from the new playlist,
-      // which is where both of them live.
-      if (linkChanged && spid && cl && spLinked()) {
+      // which is where both of them live. A work linked to a playlist it holds
+      // no tracks from is the same gap arriving the other way round — a link
+      // that saved while the read failed — and the ids are the half that
+      // actually plays, so saving fills them in.
+      if (cl && spid && spLinked() && (linkChanged || !(a.trackIds && a.trackIds.length))) {
         playlistTracks(spid).then(function (got) {
           if (!got.ids.length) { toast('That playlist is empty.'); return; }
           a.trackIds = got.ids;
           a.playlistName = null;   // the name no longer describes what it points at
-          // The new playlist decides the runtime. The minutes box was filled in
-          // from the old link, so treating it as a deliberate answer would keep a
-          // number that describes music this work no longer points at.
-          a.minutes = Math.max(1, Math.round(got.ms / 60000));
-          a.approx = false;
+          // A relink decides the runtime: the minutes box was filled in from the
+          // old link, so treating it as a deliberate answer would keep a number
+          // describing music this work no longer points at. Filling in a work
+          // that was linked all along must not overwrite one typed by hand.
+          if (linkChanged || !a.minutes) {
+            a.minutes = Math.max(1, Math.round(got.ms / 60000));
+            a.approx = false;
+          }
           save();
           render();
           toast(name + ' · ' + got.ids.length + ' tracks · ' + fmt(a.minutes));
